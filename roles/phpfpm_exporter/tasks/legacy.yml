@@ -1,0 +1,20 @@
+---
+- name: Inspect historical service state
+  ansible.builtin.service_facts:
+
+- name: Stop and disable explicitly managed historical services
+  ansible.builtin.systemd_service:
+    name: '{{ item }}'
+    state: stopped
+    enabled: false
+  loop: '{{ _phpfpm_exporter_state.legacy_services }}'
+  when:
+    - item in ansible_facts.services
+    - ansible_facts.services[item].status | default('') != 'not-found'
+
+- name: Remove explicitly managed historical unit files
+  ansible.builtin.file:
+    path: '{{ _phpfpm_exporter_state.systemd_dir }}/{{ item }}'
+    state: absent
+  loop: '{{ _phpfpm_exporter_state.legacy_services }}'
+  notify: Reload PHP-FPM exporter units

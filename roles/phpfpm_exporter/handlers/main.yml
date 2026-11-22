@@ -1,0 +1,19 @@
+---
+- name: Reload PHP-FPM exporter units
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - _phpfpm_exporter_state.manage_service
+    - not ansible_check_mode
+
+- name: Restart PHP-FPM exporter
+  become: true
+  ansible.builtin.systemd_service:
+    name: php_fpm_exporter.service
+    daemon_reload: true
+    state: restarted
+  when:
+    - _phpfpm_exporter_state.manage_service
+    - not ansible_check_mode
+    - _phpfpm_exporter_service_ready | default(false)

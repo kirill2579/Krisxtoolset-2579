@@ -10,6 +10,7 @@ managed Linux hosts with Python and the privileges needed by each role.
 | `krisx.ops.users` | Local users, groups, public SSH keys, SSH principals and explicit sudo rules on Debian/Red Hat families. Install `sudo` before managing sudo rules. Optional deployment files must be supplied by the caller. |
 | `krisx.ops.sshd` | Validate and manage an explicitly supplied OpenSSH server configuration, including optional Match blocks and SSH CA public keys. Keep console access and confirm a fresh login before closing the existing connection. |
 | `krisx.ops.php` | Versioned PHP CLI and FPM on Ubuntu 22.04/24.04. Set the desired versions and package source; disable `php_manage_repository` if using the OS repositories or your own managed source. |
+| `krisx.ops.phpfpm_exporter` | Metrics for existing PHP-FPM pools on Debian/Ubuntu with systemd. Defaults to loopback. See the [role guide](roles/phpfpm_exporter/README.md). |
 | `krisx.ops.nginx` | Install and configure nginx on APT-based Linux. Supply `nginx_vhost_file` and `nginx_conf` explicitly. |
 | `krisx.ops.redis` | Configure standalone distro Redis on Ubuntu 24.04 with systemd; loopback only. See the [role guide](roles/redis/README.md) and [standalone example](examples/redis.yml). |
 | `krisx.ops.mongodb` | **Experimental:** MongoDB 7.0, exactly three Ubuntu 22.04 amd64 nodes with AVX and caller-supplied TLS and secrets. Not a single-node installer and not for Ubuntu 24.04. |
@@ -22,7 +23,7 @@ Run these commands from the repository root:
 
 ```sh
 ansible-galaxy collection build
-ansible-galaxy collection install ./krisx-ops-0.1.1.tar.gz
+ansible-galaxy collection install ./krisx-ops-0.1.2.tar.gz
 ```
 
 Ansible installs the declared `ansible.posix` and `community.general`

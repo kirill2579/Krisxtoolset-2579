@@ -1,0 +1,107 @@
+---
+- name: Reject obsolete exporter variable names
+  ansible.builtin.assert:
+    that:
+      - vars | select('match', '^php_fpm_exporter_') | list | length == 0
+    fail_msg: 'Obsolete php_fpm_exporter_* inputs are unsupported; rename them to phpfpm_exporter_*.'
+    quiet: true
+
+- name: Require a supported exporter platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system | default('') == 'Linux'
+      - ansible_facts.os_family | default('') == 'Debian'
+      - ansible_facts.service_mgr | default('') == 'systemd'
+    fail_msg: 'phpfpm_exporter requires Debian/Ubuntu with systemd and gathered facts.'
+
+- name: Build a validated exporter plan
+  ansible.builtin.set_fact:
+    _phpfpm_exporter_state: '{{ _phpfpm_exporter_inputs | krisx.ops.phpfpm_exporter_plan(php_fpm_conf | default([])) }}'
+  vars:
+    _phpfpm_exporter_inputs:
+      version: '{{ phpfpm_exporter_version }}'
+      arch: '{{ phpfpm_exporter_arch }}'
+      checksum: '{{ phpfpm_exporter_checksum }}'
+      user: '{{ phpfpm_exporter_system_user }}'
+      group: '{{ phpfpm_exporter_system_group }}'
+      socket_groups: '{{ phpfpm_exporter_socket_groups }}'
+      listen_address: '{{ phpfpm_exporter_listen_address }}'
+      metrics_path: '{{ phpfpm_exporter_metrics_path }}'
+      status_path: '{{ phpfpm_exporter_status_path }}'
+      binary_path: '{{ phpfpm_exporter_binary_path }}'
+      cache_dir: '{{ phpfpm_exporter_cache_dir }}'
+      systemd_dir: '{{ phpfpm_exporter_systemd_dir }}'
+      socket_dir: '{{ phpfpm_exporter_socket_dir }}'
+      socket_paths: '{{ phpfpm_exporter_socket_paths }}'
+      manage_service: '{{ phpfpm_exporter_manage_service }}'
+      service_enabled: '{{ phpfpm_exporter_service_enabled }}'
+      legacy_services: '{{ phpfpm_exporter_legacy_services }}'
+
+- name: Read existing PHP socket groups without modifying them
+  ansible.builtin.getent:
+    database: group
+    key: '{{ item }}'
+    fail_key: false
+  loop: '{{ _phpfpm_exporter_state.socket_groups }}'
+  register: _phpfpm_exporter_group_results
+
+- name: Require the configured PHP socket groups
+  ansible.builtin.assert:
+    that:
+      - item.ansible_facts.getent_group[item.item] is not none
+    fail_msg: 'PHP socket group {{ item.item }} does not exist. Run the PHP/user provisioning first, or set phpfpm_exporter_socket_groups to the existing socket groups.'
+  loop: '{{ _phpfpm_exporter_group_results.results }}'
+
+- name: Inspect exporter installation paths without following links
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+    get_checksum: false
+  loop:
+    - '{{ _phpfpm_exporter_state.binary_path }}'
+    - '{{ _phpfpm_exporter_state.unit_path }}'
+    - '{{ _phpfpm_exporter_state.cache_dir }}'
+    - '{{ _phpfpm_exporter_state.systemd_dir }}'
+  register: _phpfpm_exporter_path_results
+
+- name: Reject symlinks and unexpected installation path types
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not (item.stat.islnk | default(false))
+      - not item.stat.exists or (item.stat.isdir | default(false) if item.item in [_phpfpm_exporter_state.cache_dir, _phpfpm_exporter_state.systemd_dir] else item.stat.isreg | default(false))
+    fail_msg: 'Exporter paths must be ordinary files/directories, never symlinks or special files.'
+  loop: '{{ _phpfpm_exporter_path_results.results }}'
+
+- name: Read the existing exporter primary group
+  ansible.builtin.getent:
+    database: group
+    key: '{{ _phpfpm_exporter_state.group }}'
+    fail_key: false
+  register: _phpfpm_exporter_primary_group
+
+- name: Read the existing exporter account
+  ansible.builtin.getent:
+    database: passwd
+    key: '{{ _phpfpm_exporter_state.user }}'
+    fail_key: false
+  register: _phpfpm_exporter_existing_account
+
+- name: Record whether a service unit is already installed
+  ansible.builtin.set_fact:
+    _phpfpm_exporter_service_ready: '{{ _phpfpm_exporter_path_results.results[1].stat.exists }}'
+
+- name: Refuse an existing UID-zero exporter account
+  ansible.builtin.assert:
+    that:
+      - _phpfpm_exporter_existing_account.ansible_facts.getent_passwd[_phpfpm_exporter_state.user] is none or _phpfpm_exporter_existing_account.ansible_facts.getent_passwd[_phpfpm_exporter_state.user][1] | string != '0'
+      - _phpfpm_exporter_primary_group.ansible_facts.getent_group[_phpfpm_exporter_state.group] is none or _phpfpm_exporter_primary_group.ansible_facts.getent_group[_phpfpm_exporter_state.group][1] | string != '0'
+    fail_msg: 'The exporter account and primary group must not have UID/GID 0.'
+
+- name: Require an existing download cache to be root-controlled
+  ansible.builtin.assert:
+    that:
+      - not _phpfpm_exporter_cache_stat.exists or _phpfpm_exporter_cache_stat.uid == 0
+      - not _phpfpm_exporter_cache_stat.exists or (_phpfpm_exporter_cache_stat.mode[-2] in '0145' and _phpfpm_exporter_cache_stat.mode[-1] in '0145')
+    fail_msg: 'An existing exporter cache must be root-owned and not writable by group or others.'
+  vars:
+    _phpfpm_exporter_cache_stat: '{{ _phpfpm_exporter_path_results.results[2].stat }}'

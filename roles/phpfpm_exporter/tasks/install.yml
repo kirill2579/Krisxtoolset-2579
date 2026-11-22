@@ -1,0 +1,82 @@
+---
+- name: Validate exporter inputs for this phase
+  ansible.builtin.import_tasks: prepare.yml
+
+- name: Inspect cached release artifacts without following links
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+    get_checksum: false
+  loop:
+    - '{{ _phpfpm_exporter_state.archive_path }}'
+    - '{{ _phpfpm_exporter_state.cache_dir }}/{{ _phpfpm_exporter_state.archive_name }}'
+    - '{{ _phpfpm_exporter_state.source_binary }}'
+  register: _phpfpm_exporter_cache_results
+
+- name: Reject unsafe cached release artifacts
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (not (item.stat.islnk | default(false)) and item.stat.uid == 0)
+      - not item.stat.exists or (item.stat.isdir | default(false) if item.item == _phpfpm_exporter_state.cache_dir + '/' + _phpfpm_exporter_state.archive_name else item.stat.isreg | default(false))
+    fail_msg: 'Cached release artifacts must be root-owned ordinary files/directories, never symlinks.'
+  loop: '{{ _phpfpm_exporter_cache_results.results }}'
+
+- name: Create the exporter primary group
+  ansible.builtin.group:
+    name: '{{ _phpfpm_exporter_state.group }}'
+    system: true
+    state: present
+  when: _phpfpm_exporter_primary_group.ansible_facts.getent_group[_phpfpm_exporter_state.group] is none
+
+- name: Create the exporter service account
+  ansible.builtin.user:
+    name: '{{ _phpfpm_exporter_state.user }}'
+    group: '{{ _phpfpm_exporter_state.group }}'
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+  when: _phpfpm_exporter_existing_account.ansible_facts.getent_passwd[_phpfpm_exporter_state.user] is none
+  notify: Restart PHP-FPM exporter
+
+- name: Create private root-owned download cache
+  ansible.builtin.file:
+    path: '{{ _phpfpm_exporter_state.cache_dir }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Download the pinned exporter release with SHA256 verification
+  ansible.builtin.get_url:
+    url: '{{ _phpfpm_exporter_state.url }}'
+    dest: '{{ _phpfpm_exporter_state.archive_path }}'
+    checksum: 'sha256:{{ _phpfpm_exporter_state.checksum }}'
+    owner: root
+    group: root
+    mode: '0600'
+  when: not ansible_check_mode
+
+- name: Extract the verified release into the private cache
+  ansible.builtin.unarchive:
+    src: '{{ _phpfpm_exporter_state.archive_path }}'
+    dest: '{{ _phpfpm_exporter_state.cache_dir }}'
+    remote_src: true
+    owner: root
+    group: root
+  when: not ansible_check_mode
+
+- name: Install the verified exporter binary
+  ansible.builtin.copy:
+    src: '{{ _phpfpm_exporter_state.source_binary }}'
+    dest: '{{ _phpfpm_exporter_state.binary_path }}'
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart PHP-FPM exporter
+  when: not ansible_check_mode
+
+- name: Explain download prediction limits in check mode
+  ansible.builtin.debug:
+    msg: 'Check mode validates inputs and predicts local account/unit changes; it does not download, extract, or certify the installed exporter binary.'
+  when: ansible_check_mode

@@ -1,0 +1,10 @@
+---
+- name: Install the pinned PHP-FPM exporter
+  ansible.builtin.import_tasks: install.yml
+  become: true
+  tags: [phpfpm_exporter, install, phpfpm_exporter_install]
+
+- name: Configure PHP-FPM exporter service
+  ansible.builtin.import_tasks: configure.yml
+  become: true
+  tags: [phpfpm_exporter, configure, phpfpm_exporter_config]

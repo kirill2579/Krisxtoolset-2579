@@ -1,0 +1,27 @@
+# Managed by Ansible.
+[Unit]
+Description=Prometheus PHP-FPM exporter
+After=network.target
+
+[Service]
+Type=simple
+User={{ _phpfpm_exporter_state.user }}
+Group={{ _phpfpm_exporter_state.group }}
+SupplementaryGroups={{ _phpfpm_exporter_state.socket_groups | join(' ') }}
+ExecStart={{ _phpfpm_exporter_state.binary_path }} \
+    --web.telemetry-path={{ _phpfpm_exporter_state.metrics_path }} \
+    --web.listen-address={{ _phpfpm_exporter_state.listen_address }} \
+    --phpfpm.status-path={{ _phpfpm_exporter_state.status_path }} \
+{% for socket in _phpfpm_exporter_state.socket_paths %}
+    --phpfpm.socket-paths={{ socket }}{{ ' \\' if not loop.last else '' }}
+{% endfor %}
+SyslogIdentifier=php_fpm_exporter
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

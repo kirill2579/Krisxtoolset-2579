@@ -1,0 +1,65 @@
+---
+- name: Validate exporter inputs for this phase
+  ansible.builtin.import_tasks: prepare.yml
+
+- name: Inspect installed exporter binary
+  ansible.builtin.stat:
+    path: '{{ _phpfpm_exporter_state.binary_path }}'
+    follow: false
+  register: _phpfpm_exporter_installed
+
+- name: Read the exporter service account
+  ansible.builtin.getent:
+    database: passwd
+    key: '{{ _phpfpm_exporter_state.user }}'
+    fail_key: false
+  register: _phpfpm_exporter_account
+
+- name: Read the installed exporter primary group
+  ansible.builtin.getent:
+    database: group
+    key: '{{ _phpfpm_exporter_state.group }}'
+    fail_key: false
+  register: _phpfpm_exporter_config_group
+
+- name: Require installed prerequisites outside check mode
+  ansible.builtin.assert:
+    that:
+      - _phpfpm_exporter_installed.stat.exists and _phpfpm_exporter_installed.stat.isreg | default(false)
+      - not (_phpfpm_exporter_installed.stat.islnk | default(false))
+      - _phpfpm_exporter_installed.stat.uid == 0
+      - _phpfpm_exporter_installed.stat.mode[-2] in '0145' and _phpfpm_exporter_installed.stat.mode[-1] in '15'
+      - _phpfpm_exporter_account.ansible_facts.getent_passwd[_phpfpm_exporter_state.user] is not none
+      - _phpfpm_exporter_config_group.ansible_facts.getent_group[_phpfpm_exporter_state.group] is not none
+    fail_msg: 'Install phpfpm_exporter first; config-only runs never install a binary or create an account.'
+  when: not ansible_check_mode
+
+- name: Install PHP-FPM exporter unit
+  ansible.builtin.template:
+    src: php_fpm_exporter.service.j2
+    dest: '{{ _phpfpm_exporter_state.unit_path }}'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart PHP-FPM exporter
+
+- name: Record that the service unit is installed
+  ansible.builtin.set_fact:
+    _phpfpm_exporter_service_ready: true
+  when: not ansible_check_mode
+
+- name: Migrate explicitly listed historical per-pool services
+  ansible.builtin.import_tasks: legacy.yml
+  when: _phpfpm_exporter_state.legacy_services | length > 0
+
+- name: Apply changed exporter unit or binary before ensuring service state
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the configured exporter service state
+  ansible.builtin.systemd_service:
+    name: php_fpm_exporter.service
+    enabled: '{{ _phpfpm_exporter_state.service_enabled }}'
+    state: started
+  when:
+    - _phpfpm_exporter_state.manage_service
+    - not ansible_check_mode

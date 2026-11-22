@@ -1,0 +1,13 @@
+---
+- name: Install an exporter for existing PHP-FPM pools
+  hosts: example_php_metrics
+  gather_facts: true
+  become: true
+  vars:
+    # Example for a distro socket. Match the actual path and group on the host.
+    phpfpm_exporter_socket_paths:
+      - /run/php/php8.3-fpm.sock
+    phpfpm_exporter_socket_groups: [www-data]
+    phpfpm_exporter_listen_address: '127.0.0.1:9223'
+  roles:
+    - role: krisx.ops.phpfpm_exporter

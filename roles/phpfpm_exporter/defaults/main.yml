@@ -1,0 +1,26 @@
+---
+# Release checksums are pinned below; unknown releases require an explicit checksum.
+phpfpm_exporter_version: '0.5.0'
+phpfpm_exporter_arch: "{{ go_arch | default({'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_facts.architecture | default(''), '')) }}"
+phpfpm_exporter_checksums:
+  '0.5.0':
+    amd64: 3eb1af2d8f107e9aa43467e8a5e823bd7da8b1c600f61e020708de29746b6c40
+    arm64: dae117466df7b4afd6097b0851ad99ca8500a768e9713d81acf85e83abd79010
+phpfpm_exporter_checksum: "{{ phpfpm_exporter_checksums.get(phpfpm_exporter_version, {}).get(phpfpm_exporter_arch, '') }}"
+phpfpm_exporter_system_group: php-fpm-exporter
+phpfpm_exporter_system_user: php-fpm-exporter
+# Refer to the PHP role's effective socket group; never change that group's GID.
+phpfpm_exporter_socket_groups: "{{ [php_fpm_listen_group | default(php_fpm_group | default('www'))] }}"
+phpfpm_exporter_listen_address: '127.0.0.1:9223'
+phpfpm_exporter_metrics_path: /metrics
+phpfpm_exporter_status_path: /status
+phpfpm_exporter_socket_dir: "{{ php_fpm_socket_dir | default('/var/run/fpm') }}"
+# An explicit nonempty list overrides derivation from php_fpm_conf.
+phpfpm_exporter_socket_paths: []
+phpfpm_exporter_binary_path: /usr/local/bin/php_fpm_exporter
+phpfpm_exporter_cache_dir: /var/cache/php-fpm-exporter
+phpfpm_exporter_systemd_dir: /etc/systemd/system
+phpfpm_exporter_manage_service: true
+phpfpm_exporter_service_enabled: true
+# Only explicitly named historical per-pool units may be removed.
+phpfpm_exporter_legacy_services: []
