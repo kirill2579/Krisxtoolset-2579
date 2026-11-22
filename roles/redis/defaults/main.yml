@@ -1,0 +1,9 @@
+---
+redis_bind: ['127.0.0.1']
+redis_port: 6379
+# Native Redis directives; see README for defaults and standalone safety bounds.
+redis_config: {}
+redis_adopt_existing_config: false
+redis_service_enabled: true
+# Explicit exception only for LXC hosts that cannot create a nested user namespace.
+redis_lxc_disable_private_users: false

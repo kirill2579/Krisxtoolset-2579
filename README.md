@@ -11,6 +11,7 @@ managed Linux hosts with Python and the privileges needed by each role.
 | `krisx.ops.sshd` | Validate and manage an explicitly supplied OpenSSH server configuration, including optional Match blocks and SSH CA public keys. Keep console access and confirm a fresh login before closing the existing connection. |
 | `krisx.ops.php` | Versioned PHP CLI and FPM on Ubuntu 22.04/24.04. Set the desired versions and package source; disable `php_manage_repository` if using the OS repositories or your own managed source. |
 | `krisx.ops.nginx` | Install and configure nginx on APT-based Linux. Supply `nginx_vhost_file` and `nginx_conf` explicitly. |
+| `krisx.ops.redis` | Configure standalone distro Redis on Ubuntu 24.04 with systemd; loopback only. See the [role guide](roles/redis/README.md) and [standalone example](examples/redis.yml). |
 | `krisx.ops.mongodb` | **Experimental:** MongoDB 7.0, exactly three Ubuntu 22.04 amd64 nodes with AVX and caller-supplied TLS and secrets. Not a single-node installer and not for Ubuntu 24.04. |
 | `krisx.ops.pkg_repo` | Manage explicit APT repositories with scoped signing keys and required key checksums. |
 | `krisx.ops.pkg_install` | Install explicitly listed packages; an empty list makes no package changes. |
@@ -21,7 +22,7 @@ Run these commands from the repository root:
 
 ```sh
 ansible-galaxy collection build
-ansible-galaxy collection install ./krisx-ops-0.1.0.tar.gz
+ansible-galaxy collection install ./krisx-ops-0.1.1.tar.gz
 ```
 
 Ansible installs the declared `ansible.posix` and `community.general`

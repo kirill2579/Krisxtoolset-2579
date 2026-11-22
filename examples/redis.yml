@@ -1,0 +1,18 @@
+---
+- name: Configure standalone Redis on a disposable Ubuntu 24.04 host
+  hosts: example_redis
+  gather_facts: true
+  become: true
+  vars:
+    pkg_install_apt_no_service_start: true
+    pkg_install:
+      - name: redis-server
+        state: present
+      - name: redis-tools
+        state: present
+    redis_bind: ['127.0.0.1']
+    # Review and back up any existing redis.conf and data before opting in.
+    redis_adopt_existing_config: false
+  roles:
+    - role: krisx.ops.pkg_install
+    - role: krisx.ops.redis

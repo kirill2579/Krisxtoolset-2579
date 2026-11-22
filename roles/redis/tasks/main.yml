@@ -1,0 +1,249 @@
+---
+- name: Reject removed standalone Redis variables
+  ansible.builtin.assert:
+    that:
+      - redis_maxmemory_bytes is not defined
+      - redis_maxmemory_policy is not defined
+      - redis_persistence is not defined
+      - redis_save is not defined
+      - redis_appendfsync is not defined
+    fail_msg: >-
+      Removed Redis variables detected. Move redis_maxmemory_bytes to redis_config.maxmemory,
+      redis_maxmemory_policy to redis_config['maxmemory-policy'], redis_save to redis_config.save,
+      and redis_appendfsync to redis_config.appendfsync. Replace redis_persistence with explicit
+      redis_config.save and redis_config.appendonly; see roles/redis/README.md.
+
+- name: Validate supported platform and service policy
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.service_mgr == 'systemd'
+      - redis_service_enabled is boolean
+      - redis_adopt_existing_config is boolean
+      - redis_lxc_disable_private_users is boolean
+    fail_msg: redis requires Ubuntu 24.04/systemd, installed distro Redis and boolean service/adoption policy.
+
+- name: Inspect installed services before any configuration changes
+  ansible.builtin.service_facts:
+
+- name: Require the distro Redis service
+  ansible.builtin.assert:
+    that:
+      - "'redis-server.service' in ansible_facts.services"
+    fail_msg: Install redis-server and redis-tools using pkg_install before this role.
+
+- name: Inspect systemd drop-in directory before changes
+  ansible.builtin.stat:
+    path: /etc/systemd/system/redis-server.service.d
+    follow: false
+  register: redis_dropin_dir_stat
+
+- name: Require a regular drop-in directory when present
+  ansible.builtin.assert:
+    that:
+      - not redis_dropin_dir_stat.stat.exists or (redis_dropin_dir_stat.stat.isdir and not redis_dropin_dir_stat.stat.islnk)
+
+- name: Inspect role-owned PrivateUsers drop-in
+  ansible.builtin.stat:
+    path: /etc/systemd/system/redis-server.service.d/90-krisxtoolset-redis-private-users.conf
+    follow: false
+  register: redis_dropin_stat
+
+- name: Reject unexpected drop-in file type
+  ansible.builtin.assert:
+    that:
+      - not redis_dropin_stat.stat.exists or (redis_dropin_stat.stat.isreg and not redis_dropin_stat.stat.islnk)
+
+- name: Read existing PrivateUsers drop-in
+  ansible.builtin.slurp:
+    src: /etc/systemd/system/redis-server.service.d/90-krisxtoolset-redis-private-users.conf
+  register: redis_dropin_content
+  when: redis_dropin_stat.stat.exists
+
+- name: Refuse to overwrite or remove a foreign drop-in
+  ansible.builtin.assert:
+    that:
+      - "(redis_dropin_content.content | b64decode).splitlines()[:1] == ['# Managed by Krisxtoolset redis role: PrivateUsers override']"
+    fail_msg: The PrivateUsers drop-in path is occupied by an unmanaged file; review it manually.
+  when: redis_dropin_stat.stat.exists
+
+- name: Inspect last successfully applied configuration checksum
+  ansible.builtin.stat:
+    path: /etc/redis/.krisxtoolset-redis-applied
+    follow: false
+  register: redis_applied_stat
+
+- name: Reject unexpected applied marker type
+  ansible.builtin.assert:
+    that:
+      - not redis_applied_stat.stat.exists or (redis_applied_stat.stat.isreg and not redis_applied_stat.stat.islnk)
+
+- name: Read last successfully applied configuration checksum
+  ansible.builtin.slurp:
+    src: /etc/redis/.krisxtoolset-redis-applied
+  register: redis_applied_content
+  when: redis_applied_stat.stat.exists
+
+- name: Install Redis configuration without exposing secrets
+  block:
+    - name: Validate and atomically install standalone Redis configuration
+      krisx.ops.redis_config:
+        settings:
+          bind: '{{ redis_bind }}'
+          port: '{{ redis_port }}'
+          config: '{{ redis_config }}'
+        adopt_existing_config: '{{ redis_adopt_existing_config }}'
+      register: redis_config_result
+      no_log: true
+      diff: false
+  rescue:
+    - name: Report sanitized Redis configuration error
+      ansible.builtin.fail:
+        msg: "{{ redis_config_result.safe_error | default('Redis configuration failed; inspect package files and permissions') }}"
+
+- name: Create drop-in directory only for explicit LXC exception
+  ansible.builtin.file:
+    path: /etc/systemd/system/redis-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: redis_lxc_disable_private_users and not redis_dropin_dir_stat.stat.exists
+
+- name: Install only the explicit PrivateUsers exception
+  ansible.builtin.copy:
+    content: |
+      # Managed by Krisxtoolset redis role: PrivateUsers override
+      [Service]
+      PrivateUsers=false
+    dest: /etc/systemd/system/redis-server.service.d/90-krisxtoolset-redis-private-users.conf
+    owner: root
+    group: root
+    mode: '0644'
+  register: redis_dropin_install
+  when: redis_lxc_disable_private_users and (not ansible_check_mode or redis_dropin_dir_stat.stat.exists)
+
+- name: Remove only the role-owned exception when opted out
+  ansible.builtin.file:
+    path: /etc/systemd/system/redis-server.service.d/90-krisxtoolset-redis-private-users.conf
+    state: absent
+  register: redis_dropin_remove
+  when: not redis_lxc_disable_private_users
+
+- name: Calculate desired configuration and unit policy checksum
+  ansible.builtin.set_fact:
+    redis_effective_checksum: "{{ ((redis_config_result.checksum ~ ':private-users-exception=true') | hash('sha256')) if redis_lxc_disable_private_users else redis_config_result.checksum }}"
+
+- name: Determine whether configuration or unit policy needs activation
+  ansible.builtin.set_fact:
+    redis_restart_required: "{{ (redis_lxc_disable_private_users and not redis_dropin_stat.stat.exists) or redis_config_result.changed or (redis_dropin_install.changed | default(false)) or (redis_dropin_remove.changed | default(false)) or (redis_applied_content.content | default('') | b64decode | trim) != redis_effective_checksum }}"
+
+- name: Invalidate applied marker after configuration or drop-in repair
+  ansible.builtin.file:
+    path: /etc/redis/.krisxtoolset-redis-applied
+    state: absent
+  when: redis_config_result.changed or (redis_dropin_install.changed | default(false)) or (redis_dropin_remove.changed | default(false))
+
+- name: Clear a previous start-limit failure before required activation
+  ansible.builtin.command:
+    argv: [systemctl, reset-failed, redis-server.service]
+  changed_when: false
+  when: redis_restart_required and not ansible_check_mode
+
+- name: Activate Redis with bounded configuration recovery
+  block:
+    - name: Start Redis and restart only for unapplied configuration or unit policy
+      ansible.builtin.systemd_service:
+        name: redis-server
+        enabled: '{{ redis_service_enabled }}'
+        daemon_reload: '{{ redis_restart_required }}'
+        state: "{{ 'restarted' if redis_restart_required else 'started' }}"
+      # Suppress rich Ansible error diagnostics: Redis may echo credentials.
+      # systemd_service reports state=started on successful start/restart only.
+      failed_when: false
+      register: redis_activation_result
+      no_log: true
+
+    - name: Require successful Redis activation without exposing native diagnostics
+      ansible.builtin.fail:
+        msg: Redis service activation failed; inspect diagnostics locally.
+      when: redis_activation_result.state | default('') != 'started'
+  rescue:
+    - name: Invalidate applied marker after failed activation
+      ansible.builtin.file:
+        path: /etc/redis/.krisxtoolset-redis-applied
+        state: absent
+
+    - name: Initialize configuration recovery result
+      ansible.builtin.set_fact:
+        redis_config_recovery_succeeded: false
+        redis_config_recovery_attempted: false
+
+    - name: Restore changed configuration and try previous configuration once
+      when:
+        - not ansible_check_mode
+        - redis_config_result.changed
+        - redis_config_result.backup_file is defined
+      block:
+        - name: Record configuration recovery attempt
+          ansible.builtin.set_fact:
+            redis_config_recovery_attempted: true
+
+        - name: Restore previous Redis configuration only
+          ansible.builtin.copy:
+            src: '{{ redis_config_result.backup_file }}'
+            dest: /etc/redis/redis.conf
+            remote_src: true
+            owner: root
+            group: redis
+            mode: '0640'
+          no_log: true
+          diff: false
+
+        - name: Clear start limit for one recovery attempt
+          ansible.builtin.command:
+            argv: [systemctl, reset-failed, redis-server.service]
+          changed_when: false
+          no_log: true
+
+        - name: Try restarting Redis with restored configuration
+          ansible.builtin.systemd_service:
+            name: redis-server
+            daemon_reload: true
+            state: restarted
+          failed_when: false
+          register: redis_recovery_result
+          no_log: true
+
+        - name: Require successful recovery without exposing native diagnostics
+          ansible.builtin.fail:
+            msg: Redis configuration recovery activation failed; inspect diagnostics locally.
+          when: redis_recovery_result.state | default('') != 'started'
+
+        - name: Record successful configuration recovery
+          ansible.builtin.set_fact:
+            redis_config_recovery_succeeded: true
+      rescue:
+        - name: Record failed configuration recovery
+          ansible.builtin.set_fact:
+            redis_config_recovery_succeeded: false
+
+    - name: Report failed activation without exposing Redis credentials
+      ansible.builtin.fail:
+        msg: >-
+          Redis activation failed; the desired configuration was not marked applied.
+          {{ 'The previous configuration was restored and Redis restarted.'
+             if redis_config_recovery_succeeded else
+             ('Recovery failed; inspect the service locally.' if redis_config_recovery_attempted else
+              'No changed-configuration backup was available; inspect the service locally.') }}
+          Recovery covers redis.conf only, not data, module effects, ACL side effects or systemd drop-ins.
+
+- name: Record successfully applied configuration and unit policy
+  ansible.builtin.copy:
+    content: "{{ redis_effective_checksum }}\n"
+    dest: /etc/redis/.krisxtoolset-redis-applied
+    owner: root
+    group: root
+    mode: '0600'
+  when: not ansible_check_mode
