@@ -1,0 +1,10 @@
+---
+# Role adapter preserves the shared inventory timezone unless overridden.
+system_update_time_zone: "{{ time_zone | default('Etc/UTC') }}"
+
+system_update_apt_cache_valid_time: 3600
+system_update_apt_lock_timeout: 60
+
+# Automatic reboot is opt-in and is never performed in containers/check mode.
+system_update_reboot: false
+system_update_reboot_timeout: 300

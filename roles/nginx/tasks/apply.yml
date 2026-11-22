@@ -1,0 +1,163 @@
+---
+- name: Initialize nginx recovery state
+  ansible.builtin.set_fact:
+    _nginx_apply_complete: false
+    _nginx_install_attempted: false
+    _nginx_keep_backup: false
+
+- name: Create a private nginx recovery directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ansible-nginx-
+  register: _nginx_backup
+  changed_when: false
+
+- name: Apply nginx files with recovery on failure
+  block:
+    - name: Snapshot existing managed nginx files
+      ansible.builtin.copy:
+        src: '{{ item.item.dest }}'
+        remote_src: true
+        dest: '{{ _nginx_backup.path }}/{{ _nginx_file_index }}'
+        mode: '0600'
+      loop: '{{ _nginx_original_files.results }}'
+      loop_control:
+        index_var: _nginx_file_index
+        label: '{{ item.item.dest }}'
+      when: item.stat.exists
+      changed_when: false
+      no_log: true
+
+    - name: Mark nginx installation as attempted before any live mutation
+      ansible.builtin.set_fact:
+        _nginx_install_attempted: true
+
+    - name: Ensure managed nginx directories are traversable
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: '{{ _nginx_directories }}'
+
+    - name: Install the complete rendered nginx file set
+      ansible.builtin.copy:
+        content: '{{ item.content | default(omit) }}'
+        src: '{{ item.src | default(omit) }}'
+        checksum: '{{ item.checksum | default(omit) }}'
+        decrypt: false
+        follow: false
+        dest: '{{ item.dest }}'
+        owner: root
+        group: root
+        mode: '0644'
+      loop: '{{ _nginx_managed_files }}'
+      loop_control:
+        label: '{{ item.dest }}'
+      register: _nginx_installed_files
+      # The copy action skips its checksum argument when no transfer is needed.
+      # Still require its returned source checksum to match the prepared bytes.
+      failed_when: (_nginx_installed_files.failed | default(false)) or (item.checksum is defined and (_nginx_installed_files.checksum | default('')) != item.checksum)
+      no_log: true
+
+    # Arbitrary absolute includes prevent a generic staged -t from proving the
+    # candidate graph. Validate the actual complete set before allowing reload.
+    - name: Validate the complete installed nginx configuration
+      ansible.builtin.command:
+        argv: ['{{ nginx_binary }}', -t, -c, '{{ nginx_config_dir }}/nginx.conf']
+      changed_when: false
+
+    - name: Mark nginx configuration complete
+      ansible.builtin.set_fact:
+        _nginx_apply_complete: true
+
+    # A host may use this role several times before handlers run. Capture each
+    # service's exact context rather than using the final invocation's variables.
+    - name: Queue or refresh this nginx service reload target
+      ansible.builtin.set_fact:
+        _nginx_pending_reloads: "{{ (_nginx_pending_reloads | default({})) | combine({_nginx_config_file: {'binary': nginx_binary, 'config_file': _nginx_config_file, 'service_name': nginx_service_name, 'pid_guard': nginx_template in ['nginx.conf.j2', role_path ~ '/templates/nginx.conf.j2'], 'pid_file': _nginx_effective_pid_file | default('')}}) }}"
+      vars:
+        _nginx_config_file: '{{ nginx_config_dir }}/nginx.conf'
+      when:
+        - nginx_manage_service
+        - _nginx_installed_files.changed or _nginx_config_file in (_nginx_pending_reloads | default({}))
+      changed_when: true
+      notify: nginx configuration installed
+
+    - name: Cancel only this target when service management is disabled
+      ansible.builtin.set_fact:
+        _nginx_pending_reloads: "{{ (_nginx_pending_reloads | default({})) | dict2items | rejectattr('key', 'equalto', nginx_config_dir ~ '/nginx.conf') | items2dict }}"
+      when: not nginx_manage_service
+
+  rescue:
+    - name: Disable nginx reload after an unsuccessful deployment
+      ansible.builtin.set_fact:
+        _nginx_apply_complete: false
+
+    # Restore every managed file, including copies that failed after replacing
+    # bytes. Continue recovery so one failed restore does not skip the rest.
+    - name: Restore previous managed nginx files
+      ansible.builtin.copy:
+        src: '{{ _nginx_backup.path }}/{{ _nginx_file_index }}'
+        remote_src: true
+        dest: '{{ item.item.dest }}'
+        owner: '{{ item.stat.uid }}'
+        group: '{{ item.stat.gid }}'
+        mode: '{{ item.stat.mode }}'
+      loop: '{{ _nginx_original_files.results }}'
+      loop_control:
+        index_var: _nginx_file_index
+        label: '{{ item.item.dest }}'
+      when:
+        - _nginx_install_attempted
+        - item.stat.exists
+      ignore_errors: true
+      register: _nginx_restore_files
+      no_log: true
+
+    - name: Remove managed nginx files that did not previously exist
+      ansible.builtin.file:
+        path: '{{ item.item.dest }}'
+        state: absent
+      loop: '{{ _nginx_original_files.results }}'
+      loop_control:
+        label: '{{ item.item.dest }}'
+      when:
+        - _nginx_install_attempted
+        - not item.stat.exists
+      ignore_errors: true
+      register: _nginx_remove_files
+      no_log: true
+
+    - name: Restore metadata of existing nginx directories
+      ansible.builtin.file:
+        path: '{{ item.item }}'
+        state: directory
+        owner: '{{ item.stat.uid }}'
+        group: '{{ item.stat.gid }}'
+        mode: '{{ item.stat.mode }}'
+      loop: '{{ _nginx_original_directories.results | reverse | list }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when:
+        - _nginx_install_attempted
+        - item.stat.exists
+      ignore_errors: true
+      register: _nginx_restore_directories
+
+    - name: Retain recovery snapshots when restoration failed
+      ansible.builtin.set_fact:
+        _nginx_keep_backup: '{{ (_nginx_restore_files.failed | default(false)) or (_nginx_remove_files.failed | default(false)) or (_nginx_restore_directories.failed | default(false)) }}'
+
+    - name: Report unsuccessful nginx deployment
+      ansible.builtin.fail:
+        msg: "nginx deployment failed; reload is disabled. {{ ('Recovery snapshots retained at ' ~ _nginx_backup.path ~ '; manual recovery is required.') if _nginx_keep_backup else 'Previous managed files and existing directory metadata were restored where installation was attempted. Newly created directories are retained.' }}"
+
+  always:
+    - name: Remove successful nginx recovery snapshots
+      ansible.builtin.file:
+        path: '{{ _nginx_backup.path }}'
+        state: absent
+      when: not _nginx_keep_backup
+      changed_when: false

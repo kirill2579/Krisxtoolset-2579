@@ -1,0 +1,7 @@
+---
+- name: Upgrade installed packages using DNF
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_only: true
+    update_cache: true

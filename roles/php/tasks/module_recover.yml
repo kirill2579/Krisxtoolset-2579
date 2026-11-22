@@ -1,0 +1,84 @@
+---
+# All operations are best effort so one failure cannot skip the remaining files.
+# Recovery restores only the requested live links and the four distribution
+# marker files, not package changes or unrelated concurrent administrator edits.
+- name: Reset PHP module recovery result
+  ansible.builtin.set_fact:
+    _php_module_restore_failed: false
+
+- name: Reinspect PHP module recovery ancestors
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: "{{ ((_php_module_recovery.links | default([])) + (_php_module_recovery.markers | default([]))) | map(attribute='path') | map('dirname') | list | krisx.ops.php_path_ancestors }}"
+  register: _php_module_restore_ancestors
+  ignore_errors: true
+  no_log: true
+
+- name: Reinspect PHP module recovery entries
+  ansible.builtin.stat:
+    path: '{{ item.path }}'
+    follow: false
+  loop: '{{ (_php_module_recovery.links | default([])) + (_php_module_recovery.markers | default([])) }}'
+  register: _php_module_restore_leaves
+  ignore_errors: true
+  no_log: true
+
+- name: Flag unsafe PHP module recovery destinations
+  ansible.builtin.set_fact:
+    _php_module_restore_failed: true
+  loop: "{{ ((_php_module_recovery.links | default([])) | map('combine', {'kind': 'link'}) | list) + ((_php_module_recovery.markers | default([])) | map('combine', {'kind': 'marker'}) | list) }}"
+  when: not (item.path | krisx.ops.php_module_recovery_safe(_php_module_restore_ancestors.results, _php_module_restore_leaves.results, item.kind))
+  no_log: true
+
+- name: Restore original PHP module live links
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    src: '{{ item.target if item.exists else omit }}'
+    state: "{{ 'link' if item.exists else 'absent' }}"
+    owner: '{{ item.uid if item.exists else omit }}'
+    group: '{{ item.gid if item.exists else omit }}'
+    follow: false
+    force: true
+  loop: '{{ _php_module_recovery.links | default([]) }}'
+  register: _php_module_restored_links
+  ignore_errors: true
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - item.path | krisx.ops.php_module_recovery_safe(_php_module_restore_ancestors.results, _php_module_restore_leaves.results, 'link')
+
+- name: Restore original PHP module administrative marker files
+  ansible.builtin.copy:
+    dest: '{{ item.path }}'
+    src: '{{ item.backup }}'
+    remote_src: true
+    mode: '{{ item.mode }}'
+    owner: '{{ item.uid }}'
+    group: '{{ item.gid }}'
+    force: true
+    follow: false
+  loop: '{{ _php_module_recovery.markers | default([]) }}'
+  when:
+    - not ansible_check_mode and item.exists
+    - item.path | krisx.ops.php_module_recovery_safe(_php_module_restore_ancestors.results, _php_module_restore_leaves.results, 'marker')
+  register: _php_module_restored_markers
+  ignore_errors: true
+  no_log: true
+  diff: false
+
+- name: Remove PHP module administrative markers absent before this invocation
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: absent
+  loop: '{{ _php_module_recovery.markers | default([]) }}'
+  when:
+    - not ansible_check_mode and not item.exists
+    - item.path | krisx.ops.php_module_recovery_safe(_php_module_restore_ancestors.results, _php_module_restore_leaves.results, 'marker')
+  register: _php_module_removed_markers
+  ignore_errors: true
+  no_log: true
+
+- name: Aggregate PHP module recovery failures
+  ansible.builtin.set_fact:
+    _php_module_restore_failed: "{{ _php_module_restore_failed or (_php_module_restored_links is failed) or (_php_module_restored_markers is failed) or (_php_module_removed_markers is failed) }}"

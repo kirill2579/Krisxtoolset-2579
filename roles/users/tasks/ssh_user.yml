@@ -1,0 +1,23 @@
+---
+- name: Explain fresh-account check mode limitations
+  ansible.builtin.debug:
+    msg: "SSH key checks for {{ users_account.name }} are deferred: the account does not exist yet and no home was supplied."
+  when:
+    - ansible_check_mode
+    - users_account.name not in users_passwd.ansible_facts.getent_passwd
+    - users_account.home is not defined
+
+- name: Manage keys when the account home is known
+  when: users_account.name in users_passwd.ansible_facts.getent_passwd or users_account.home is defined
+  vars:
+    users_home: "{{ users_account.home | default(users_passwd.ansible_facts.getent_passwd[users_account.name][4]) }}"
+  block:
+    - name: Add or remove only the explicitly supplied SSH keys
+      ansible.posix.authorized_key:
+        user: "{{ users_account.name }}"
+        path: "{{ users_home }}/.ssh/authorized_keys"
+        key: "{{ users_account.ssh_key }}"
+        state: "{{ users_account.ssh_state | default('present') }}"
+        exclusive: false
+        manage_dir: true
+      no_log: true

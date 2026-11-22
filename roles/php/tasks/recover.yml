@@ -1,0 +1,116 @@
+---
+# Recovery is deliberately best-effort across the entire set. A failure on one
+# path must not skip the remaining paths, and snapshots survive incomplete recovery.
+- name: Restore captured PHP module recovery context
+  ansible.builtin.set_fact:
+    _php_module_recovery: '{{ _php_recovery_context.module_recovery }}'
+  no_log: true
+
+- name: Recover explicit PHP module changes
+  ansible.builtin.include_tasks: module_recover.yml
+
+- name: Reinspect PHP recovery directory ancestors
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: "{{ ((_php_recovery_context.files | map(attribute='item.dest') | map('dirname') | list) + (_php_recovery_context.directories | map(attribute='item') | list) + (_php_recovery_context.logs | default([]) | map(attribute='item.dest') | map('dirname') | list)) | krisx.ops.php_path_ancestors }}"
+  register: _php_recovery_paths
+  ignore_errors: true
+
+- name: Verify directory safety before restoring PHP snapshots
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false))) or (item.item == '/var/run' and item.stat.islnk | default(false) and item.stat.lnk_source | default('') == '/run')
+  loop: '{{ _php_recovery_paths.results }}'
+  register: _php_recovery_paths_safe
+  ignore_errors: true
+
+- name: Restore previous managed PHP file contents and metadata
+  ansible.builtin.copy:
+    src: '{{ _php_recovery_context.backup }}/{{ _php_index }}'
+    remote_src: true
+    dest: '{{ item.item.dest }}'
+    owner: '{{ item.stat.uid }}'
+    group: '{{ item.stat.gid }}'
+    mode: '{{ item.stat.mode }}'
+    follow: false
+  loop: '{{ _php_recovery_context.files }}'
+  loop_control:
+    index_var: _php_index
+    label: '{{ item.item.dest }}'
+  when:
+    - item.stat.exists
+    - not (_php_recovery_paths_safe.failed | default(false))
+    - not (_php_recovery_paths.failed | default(false))
+  register: _php_restored_files
+  ignore_errors: true
+  no_log: true
+
+- name: Remove managed PHP files absent before the transaction
+  ansible.builtin.file:
+    path: '{{ item.item.dest }}'
+    state: absent
+  loop: '{{ _php_recovery_context.files }}'
+  when:
+    - not item.stat.exists
+    - not (_php_recovery_paths_safe.failed | default(false))
+    - not (_php_recovery_paths.failed | default(false))
+  register: _php_removed_files
+  ignore_errors: true
+  no_log: true
+
+- name: Restore existing PHP directory metadata
+  ansible.builtin.file:
+    path: '{{ item.item }}'
+    state: directory
+    owner: '{{ item.stat.uid }}'
+    group: '{{ item.stat.gid }}'
+    mode: '{{ item.stat.mode }}'
+    follow: false
+  loop: '{{ _php_recovery_context.directories | reverse | list }}'
+  when:
+    - item.stat.exists
+    - not (_php_recovery_paths_safe.failed | default(false))
+    - not (_php_recovery_paths.failed | default(false))
+  register: _php_restored_directories
+  ignore_errors: true
+
+- name: Inspect PHP log leaf types before restoring metadata
+  ansible.builtin.stat:
+    path: '{{ item.item.dest }}'
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop: '{{ _php_recovery_context.logs | default([]) }}'
+  register: _php_recovery_logs
+  ignore_errors: true
+
+- name: Refuse unsafe PHP log leaf paths during recovery
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+  loop: '{{ _php_recovery_logs.results }}'
+  register: _php_recovery_logs_safe
+  ignore_errors: true
+
+- name: Restore existing PHP log metadata while retaining all log data
+  ansible.builtin.file:
+    path: '{{ item.item.dest }}'
+    state: file
+    owner: '{{ item.stat.uid }}'
+    group: '{{ item.stat.gid }}'
+    mode: '{{ item.stat.mode }}'
+    follow: false
+  loop: '{{ _php_recovery_context.logs | default([]) }}'
+  when:
+    - item.stat.exists
+    - not (_php_recovery_logs.failed | default(false))
+    - not (_php_recovery_logs_safe.failed | default(false))
+    - not (_php_recovery_paths_safe.failed | default(false))
+    - not (_php_recovery_paths.failed | default(false))
+  register: _php_restored_logs
+  ignore_errors: true
+
+- name: Record whether the PHP recovery completed
+  ansible.builtin.set_fact:
+    _php_recovery_failed: '{{ (_php_module_restore_failed | default(false)) or (_php_recovery_paths.failed | default(false)) or (_php_recovery_paths_safe.failed | default(false)) or (_php_restored_files.failed | default(false)) or (_php_removed_files.failed | default(false)) or (_php_restored_directories.failed | default(false)) or (_php_restored_logs.failed | default(false)) or (_php_recovery_logs.failed | default(false)) or (_php_recovery_logs_safe.failed | default(false)) }}'

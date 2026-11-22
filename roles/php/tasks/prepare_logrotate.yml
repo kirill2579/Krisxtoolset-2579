@@ -1,0 +1,52 @@
+---
+- name: Validate PHP pool logrotate management flag
+  ansible.builtin.assert:
+    that:
+      - php_fpm_manage_logrotate is boolean
+    fail_msg: 'php_fpm_manage_logrotate must be a boolean.'
+
+- name: Capture only bundled PHP pool log destinations for rotation
+  ansible.builtin.set_fact:
+    _php_pool_log_paths: "{{ _php_log_paths | selectattr('kind', 'in', ['error', 'slow']) | list }}"
+
+- name: Capture whether PHP pool logrotate parser validation is needed
+  ansible.builtin.set_fact:
+    _php_logrotate_required: '{{ php_fpm_manage_logrotate and _php_pool_log_paths | length > 0 }}'
+
+- name: Include logrotate in installation dependencies for active pool rotation
+  ansible.builtin.set_fact:
+    _php_packages: "{{ (_php_packages + ['logrotate']) | unique | list }}"
+  when: _php_logrotate_required
+
+- name: Validate dedicated PHP pool logrotate settings
+  ansible.builtin.assert:
+    that:
+      - php_fpm_logrotate_file is string
+      - php_fpm_logrotate_file | krisx.ops.php_safe_path == php_fpm_logrotate_file
+      - php_fpm_logrotate_file is match('^/etc/logrotate[.]d/ansible-[A-Za-z0-9_-]+$')
+      - php_fpm_logrotate_binary | krisx.ops.php_safe_path == php_fpm_logrotate_binary
+      - php_fpm_logrotate_frequency in ['daily', 'weekly', 'monthly', 'yearly']
+      - php_fpm_logrotate_rotate is integer and php_fpm_logrotate_rotate is not boolean
+      - php_fpm_logrotate_rotate > 0
+    fail_msg: 'PHP pool rotation needs a dedicated /etc/logrotate.d/ansible-* filename, an absolute safe logrotate binary, daily/weekly/monthly/yearly frequency and a positive integer retention count. Packaged PHP and nginx rotation files are never managed.'
+  when: php_fpm_manage_logrotate
+
+# Ubuntu nginx already owns /var/log/nginx/*.log. A second rule for those
+# files is a duplicate, regardless of whether the new rule uses a glob.
+- name: Reject PHP pool rotation overlapping the packaged nginx log rule
+  ansible.builtin.assert:
+    that:
+      - item.dest | dirname != '/var/log/nginx'
+    fail_msg: 'PHP pool logs directly under /var/log/nginx overlap its packaged *.log rotation rule. Use php_fpm_log_dir=/var/log/php, or set php_fpm_manage_logrotate=false and manage compatible rotation separately. Existing nginx logs and rules are not moved, removed or rewritten.'
+  loop: '{{ _php_pool_log_paths }}'
+  loop_control:
+    label: '{{ item.dest }}'
+  when: php_fpm_manage_logrotate
+
+# Always render the owned policy when enabled, including a comment-only file
+# after file logging is disabled. This clears old stanzas without deleting logs.
+- name: Render the dedicated PHP pool logrotate policy
+  ansible.builtin.set_fact:
+    _php_managed_files: "{{ _php_managed_files + [{'dest': php_fpm_logrotate_file, 'content': lookup('ansible.builtin.template', 'php-pools.logrotate.j2'), 'kind': 'logrotate', 'version': ''}] }}"
+  when: php_fpm_manage_logrotate
+  no_log: true

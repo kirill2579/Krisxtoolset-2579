@@ -1,0 +1,5 @@
+---
+# An empty list performs no package operations or fact gathering.
+pkg_install: []
+# APT-only opt-in; suppress service starts requested by package maintainer scripts.
+pkg_install_apt_no_service_start: false

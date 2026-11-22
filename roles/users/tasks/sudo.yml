@@ -1,0 +1,41 @@
+---
+- name: Ensure sudo include directory exists when rules are requested
+  ansible.builtin.file:
+    path: "{{ users_sudoers_d_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  when: users_groups | selectattr('sudo_nopasswd', 'defined') | list | length > 0 or users_groups | selectattr('sudo_withpass', 'defined') | list | length > 0
+
+- name: Manage passwordless group sudo rules
+  community.general.sudoers:
+    name: "group-{{ users_item.name }}"
+    state: "{{ 'absent' if users_item.state | default('present') == 'absent' or users_item.sudo_nopasswd | default([]) | length == 0 else 'present' }}"
+    group: "{{ users_item.name }}"
+    runas: "{{ users_item.runas | default('ALL') }}"
+    commands: "{{ users_item.sudo_nopasswd | default([]) }}"
+    nopassword: true
+    sudoers_path: "{{ users_sudoers_d_dir }}"
+    validation: required
+  when: users_item.sudo_nopasswd is defined or users_item.state | default('present') == 'absent'
+  loop: "{{ users_groups }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"
+
+- name: Manage password-required group sudo rules
+  community.general.sudoers:
+    name: "group-{{ users_item.name }}-withpass"
+    state: "{{ 'absent' if users_item.state | default('present') == 'absent' or users_item.sudo_withpass | default([]) | length == 0 else 'present' }}"
+    group: "{{ users_item.name }}"
+    runas: "{{ users_item.runas | default('ALL') }}"
+    commands: "{{ users_item.sudo_withpass | default([]) }}"
+    nopassword: false
+    sudoers_path: "{{ users_sudoers_d_dir }}"
+    validation: required
+  when: users_item.sudo_withpass is defined or users_item.state | default('present') == 'absent'
+  loop: "{{ users_groups }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"

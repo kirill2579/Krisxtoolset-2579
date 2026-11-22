@@ -1,0 +1,12 @@
+---
+- name: Reject invalid or multiline directive values
+  ansible.builtin.assert:
+    that:
+      - sshd_item is string or sshd_item is boolean or sshd_item is integer
+      - sshd_item | string | trim | length > 0
+      - "sshd_item | string is not search('[\x00-\x1f\x7f]')"
+    fail_msg: 'Directive values must be nonempty single-line strings, booleans or integers.'
+  loop: '{{ _sshd_values }}'
+  loop_control:
+    loop_var: sshd_item
+    label: '{{ _sshd_directive.key }}'

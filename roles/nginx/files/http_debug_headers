@@ -1,0 +1,10 @@
+add_header X-Debug-XFF        $http_x_forwarded_for   always;   # original client chain
+add_header X-Debug-XFP        $http_x_forwarded_proto always;   # http/https
+add_header X-Debug-XFH        $http_x_forwarded_host  always;   # original Host
+add_header X-Debug-Forwarded  $http_forwarded         always;   # RFC 7239
+add_header X-Debug-Host       $host                                always;
+add_header X-Debug-RequestURI $request_uri                         always;
+add_header X-Debug-URI        $uri                                 always;  # post-rewrite
+add_header X-Debug-Script     $document_root$fastcgi_script_name   always;  # PHP file path
+add_header X-Debug-Loggable $loggable always;
+add_header X-Node       $hostname   always;

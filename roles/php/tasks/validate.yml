@@ -1,0 +1,56 @@
+---
+- name: Validate every captured PHP CLI INI and reject startup diagnostics
+  ansible.builtin.command:
+    argv: ['{{ item.binary }}', -m, -c, '{{ item.ini_file }}', -d, display_startup_errors=1, -d, display_errors=stderr]
+  loop: '{{ _php_validation_cli }}'
+  loop_control:
+    label: '{{ item.version }}'
+  register: _php_cli_validation
+  changed_when: false
+  no_log: true
+  ignore_errors: "{{ _php_validation_ignore_errors | default(false) }}"
+  failed_when: not (_php_cli_validation | krisx.ops.php_clean_diagnostics) or _php_cli_validation.stderr | default('') | trim | length > 0
+
+- name: Validate every captured PHP-FPM configuration and reject startup diagnostics
+  ansible.builtin.command:
+    argv: ['{{ item.binary }}', -t, -y, '{{ item.config_file }}', -c, '{{ item.ini_file }}', -d, display_startup_errors=1, -d, display_errors=stderr]
+  loop: '{{ _php_validation_services }}'
+  loop_control:
+    label: '{{ item.version }}'
+  register: _php_fpm_validation
+  changed_when: false
+  no_log: true
+  ignore_errors: "{{ _php_validation_ignore_errors | default(false) }}"
+  failed_when: not (_php_fpm_validation | krisx.ops.php_clean_diagnostics)
+
+- name: Verify Redis is actually loaded by bundled Redis-session FPM pools
+  ansible.builtin.command:
+    argv: ['{{ item.binary }}', -m, -c, '{{ item.ini_file }}', -d, display_startup_errors=1, -d, display_errors=stderr]
+  loop: '{{ _php_validation_services }}'
+  loop_control:
+    label: '{{ item.version }}'
+  when: item.requires_redis
+  register: _php_redis_validation
+  changed_when: false
+  no_log: true
+  ignore_errors: "{{ _php_validation_ignore_errors | default(false) }}"
+  failed_when: not (_php_redis_validation | krisx.ops.php_clean_diagnostics) or _php_redis_validation.stderr | default('') | trim | length > 0
+  # The configured session handler must exist; install the matching Redis
+  # extension through php_packages and enable it explicitly if necessary.
+
+- name: Require the Redis extension for bundled FPM Redis sessions
+  ansible.builtin.assert:
+    that:
+      - "'redis' in (item.stdout | default('') | lower).splitlines()"
+    fail_msg: 'Bundled PHP pools require the Redis extension in this FPM version. Add the matching php<version>-redis package to php_packages and enable redis for FPM if needed.'
+  register: _php_redis_requirement
+  loop: '{{ _php_redis_validation.results }}'
+  loop_control:
+    label: '{{ item.item.version }}'
+  when: not (item.skipped | default(false))
+  no_log: true
+  ignore_errors: "{{ _php_validation_ignore_errors | default(false) }}"
+
+- name: Record the combined PHP validation outcome
+  ansible.builtin.set_fact:
+    _php_validation_failed: '{{ (_php_cli_validation.failed | default(false)) or (_php_fpm_validation.failed | default(false)) or (_php_redis_validation.failed | default(false)) or (_php_redis_requirement.failed | default(false)) }}'

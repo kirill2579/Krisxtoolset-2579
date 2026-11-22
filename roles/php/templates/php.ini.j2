@@ -1,0 +1,6 @@
+{% for section, params in php_ini_merged.items() %}
+[{{ section }}]
+{% for key, value in params.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
+{% endfor %}

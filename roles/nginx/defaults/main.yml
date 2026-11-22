@@ -1,0 +1,21 @@
+---
+nginx_config_dir: /etc/nginx
+nginx_vhosts_dir: '{{ nginx_config_dir }}/vhosts'
+nginx_template: nginx.conf.j2
+nginx_mime_types_file: /etc/nginx/mime.types
+nginx_template_dir: '{{ role_path }}/templates'
+nginx_files_dir: '{{ role_path }}/files'
+nginx_vhost_template: vhost.conf.j2
+nginx_user: www-data
+# Empty means preserve an existing explicit PID path, or /run/nginx.pid for a new config.
+nginx_pid_file: ''
+nginx_filter_access_log: []
+
+# A template override must not collide with fastcgi_params in nginx_files_dir.
+nginx_fastcgi_params_template: ''
+nginx_apt_cache_valid_time: 3600
+nginx_binary: /usr/sbin/nginx
+nginx_manage_service: true
+nginx_service_name: nginx
+# The caller must configure a custom service to use this file independently.
+nginx_service_config_file: /etc/nginx/nginx.conf

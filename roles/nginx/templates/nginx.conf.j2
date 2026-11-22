@@ -1,0 +1,155 @@
+user                  {{nginx_user}};
+worker_processes      auto;
+# worker_cpu_affinity   auto;
+
+pid        {{ _nginx_effective_pid_file }};
+
+events {
+  worker_connections  4096;
+  multi_accept on;
+  use epoll;
+}
+
+http {
+
+  include       {{ nginx_mime_types_file }};
+  default_type  application/octet-stream;
+
+  log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+  log_format loki   'server="$host" '
+                    'http_x_forwarded_for="$http_x_forwarded_for" '
+                    'remote_user="$remote_user" '
+                    'request="$request" '
+                    'status=$status '
+                    'bytes_sent=$body_bytes_sent '
+                    'http_referer="$http_referer" '
+                    'useragent="$http_user_agent"';
+
+{% set log_target = log.target | default('syslog') %}
+{% if log.nginx.access | default(false) and log_target == 'file' %}
+  access_log /var/log/nginx/access.log {{ log.nginx.access_format | default('main') }} if=$loggable;
+{% elif log.nginx.access | default(false) and log_target == 'syslog' %}
+  access_log syslog:server={{ host_syslog }}:{{ host_syslog_port }},tag=nginx_access {{ log.nginx.access_format | default('main') }} if=$loggable;
+{% else %}
+  access_log off;
+{% endif %}
+{% if log.nginx.error | default(false) and log_target == 'file' %}
+  error_log /var/log/nginx/error.log warn;
+{% elif log.nginx.error | default(false) and log_target == 'syslog' %}
+  error_log syslog:server={{ host_syslog }}:{{ host_syslog_port }},tag=nginx_error warn;
+{% else %}
+  error_log /dev/null crit;
+{% endif %}
+
+# map "$host $request_uri" $loggable {
+#     default 1;
+# {% for rule in nginx_filter_access_log %}
+#     {{ rule }} 0;
+# {% endfor %}
+# }
+
+map "$request_uri" $loggable {
+    default 1;
+{% for rule in nginx_filter_access_log %}
+    {{ rule }} 0;
+{% endfor %}
+}
+
+
+
+# Fingerprint detector (e.g., name-with-abcdef12.css/js/svg)
+map $uri $is_fingerprinted {
+    default 0;
+    ~*[-_.][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]+\.(css|js|svg)$ 1;
+}
+
+# Base Expires on content-type
+map $sent_http_content_type $expires_base {
+    default                       off;
+    ~*^text/html                  off;
+    ~*^application/json           off;
+    ~*^text/css                   7d;
+    ~*^application/(x-)?javascript 7d;
+    ~*^image/                     30d;
+    ~*^font/                      30d;
+    ~*^audio/                     30d;
+    ~*^video/                     30d;
+}
+
+# Cache-Control by content-type
+map "$sent_http_content_type:$is_fingerprinted" $cachecontrol_base {
+    default                                           "no-store";
+    "~*^text/html:0$"                                 "no-store";
+    "~*^application/json:0$"                          "no-store";
+
+    "~*^text/css:1$"                                  "public, max-age=31536000, immutable";
+    "~*^application/(x-)?javascript:1$"               "public, max-age=31536000, immutable";
+    "~*^image/.*:1$"                                  "public, max-age=31536000, immutable";
+
+    "~*^text/css:0$"                                  "public, max-age=604800";
+    "~*^application/(x-)?javascript:0$"               "public, max-age=604800";
+    "~*^image/.*:0$"                                  "public, max-age=2592000, immutable";
+    "~*^font/.*:0$"                                   "public, max-age=2592000, immutable";
+    "~*^audio/.*:0$"                                  "public, max-age=2592000, immutable";
+    "~*^video/.*:0$"                                  "public, max-age=2592000, immutable";
+}
+
+map $http_authorization $has_auth    { default 0; ~. 1; }
+map $sent_http_set_cookie $has_cookie{ default 0; ~. 1; }
+
+
+map "$has_auth:$has_cookie" $cachecontrol_final {
+    default "";
+    "~^1:|:1$" "no-store, no-cache, must-revalidate, max-age=0";
+}
+map "$cachecontrol_final:$cachecontrol_base" $cachecontrol_out {
+    "~^:.+$"  $cachecontrol_base;
+    default   $cachecontrol_final;
+}
+
+map $is_fingerprinted $expires_out {
+    1       365d;
+    default $expires_base;
+}
+  ##### HEADERS ######
+  add_header X-Node       $hostname   always;
+  add_header X-Request-ID $request_id always; # nginx >= 1.10x
+  # add_header Cache-Control $cachecontrol_out always;
+  # expires $expires_out;
+  etag on;
+  
+  ##### GENERAL ######
+  client_body_buffer_size     256k;
+  client_header_buffer_size   3m;
+  large_client_header_buffers 8 256k;
+
+  server_names_hash_bucket_size  512;
+
+  server_tokens      off;
+  sendfile           on;
+  tcp_nopush         on;
+  send_timeout       60s;
+  keepalive_timeout  70 30;
+
+  reset_timedout_connection on;
+  client_max_body_size      20m;
+
+  charset   utf-8;
+
+  gzip      on;
+  gzip_vary on;
+  gzip_min_length 128;
+  gzip_proxied    any;
+  gzip_types      image/svg+xml text/plain text/css text/json application/json application/javascript application/xml;
+  gzip_disable    "msie6";
+  gzip_comp_level 5;
+#  gzip_static      on;
+
+#  error_page 500 /50x.html;
+#  error_page 502 /50x.html;
+  error_page 503 =503 /50x.html;
+  include {{ nginx_vhosts_dir }}/*.conf;
+}
+

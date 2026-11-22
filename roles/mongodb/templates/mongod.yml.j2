@@ -1,0 +1,12 @@
+# Managed by the mongodb role. Major upgrades and FCV changes are manual.
+{{ mongodb_config | combine({
+  'storage': {'dbPath': mongodb_data_dir},
+  'net': {'port': mongodb_port | int, 'bindIp': mongodb_bind_ip,
+    'tls': {'mode': 'requireTLS', 'certificateKeyFile': mongodb_tls_certificate_key_file,
+      'CAFile': mongodb_tls_ca_file, 'allowConnectionsWithoutCertificates': true}},
+  'security': {'authorization': 'enabled', 'clusterAuthMode': 'keyFile',
+    'keyFile': '/etc/mongodb-krisx/keyfile'},
+  'replication': {'replSetName': mongodb_replica_set},
+  'systemLog': {'destination': 'file', 'path': '/var/log/mongodb-krisx/mongod.log', 'logAppend': true},
+  'processManagement': {'fork': false}
+}, recursive=true) | to_nice_yaml(indent=2) }}

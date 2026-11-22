@@ -1,0 +1,90 @@
+---
+# Handlers do not reliably run rescue/always for imported task failures. Every
+# inspection is explicitly aggregated; an unsafe result prevents activation and
+# prevents rollback from overwriting an intervening administrator's changes.
+- name: Capture deferred PHP module activation targets
+  ansible.builtin.set_fact:
+    _php_module_activation_targets: '{{ _php_activation.module_recovery.targets | default([]) }}'
+    _php_module_activation_failed: false
+  no_log: true
+
+- name: Reinspect deferred PHP module directory ancestors
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: "{{ ((_php_module_activation_targets | map(attribute='source') | map('dirname') | list) + (_php_module_activation_targets | map(attribute='conf_dir') | list) + (_php_module_activation_targets | map(attribute='markers') | flatten | map(attribute='path') | map('dirname') | list)) | krisx.ops.php_path_ancestors }}"
+  register: _php_module_activation_directories
+  ignore_errors: true
+  no_log: true
+
+- name: Require safe deferred PHP module directory ancestors
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'PHP module directory ancestors changed before activation; snapshots are retained for manual review.'
+  loop: '{{ _php_module_activation_directories.results | default([]) }}'
+  register: _php_module_activation_directory_safety
+  ignore_errors: true
+  no_log: true
+
+- name: Reinspect deferred PHP module sources
+  ansible.builtin.stat:
+    path: '{{ item.source }}'
+    follow: true
+  loop: '{{ _php_module_activation_targets }}'
+  register: _php_module_activation_sources
+  ignore_errors: true
+  no_log: true
+
+- name: Reinspect deferred PHP module links
+  ansible.builtin.stat:
+    path: '{{ item.link }}'
+    follow: false
+  loop: '{{ _php_module_activation_targets }}'
+  register: _php_module_activation_links
+  ignore_errors: true
+  no_log: true
+
+- name: Reinspect deferred PHP module administrative markers
+  ansible.builtin.stat:
+    path: '{{ item.path }}'
+    follow: false
+  loop: "{{ _php_module_activation_targets | map(attribute='markers') | flatten }}"
+  register: _php_module_activation_markers
+  ignore_errors: true
+  no_log: true
+
+- name: Reinspect all deferred PHP module conf.d entries
+  ansible.builtin.find:
+    paths: '{{ item.conf_dir }}'
+    patterns: "^(?:.*-)?{{ item.module | regex_escape }}[.]ini$"
+    use_regex: true
+    recurse: false
+    file_type: any
+    follow: false
+  loop: '{{ _php_module_activation_targets }}'
+  register: _php_module_activation_found
+  ignore_errors: true
+  no_log: true
+
+- name: Require unchanged PHP module state before deferred activation
+  ansible.builtin.assert:
+    that:
+      - _php_module_activation_directories is not failed
+      - _php_module_activation_directory_safety is not failed
+      - _php_module_activation_sources is not failed
+      - _php_module_activation_links is not failed
+      - _php_module_activation_markers is not failed
+      - _php_module_activation_found is not failed
+      - _php_activation.module_recovery.post_state is defined
+      - _php_module_activation_targets | krisx.ops.php_module_fingerprint(_php_module_activation_sources.results, _php_module_activation_links.results, _php_module_activation_markers.results) == _php_activation.module_recovery.post_state
+      - _php_module_activation_targets | krisx.ops.php_module_verify(_php_module_activation_links.results, _php_module_activation_markers.results, _php_module_activation_found.results)
+    fail_msg: 'PHP module links, sources, or administrative markers changed before activation. Activation and automatic recovery are withheld; snapshots are retained for manual review.'
+  register: _php_module_activation_verified
+  when: _php_module_activation_targets | length > 0
+  ignore_errors: true
+  no_log: true
+
+- name: Record deferred PHP module activation safety
+  ansible.builtin.set_fact:
+    _php_module_activation_failed: '{{ _php_module_activation_verified is failed }}'

@@ -1,0 +1,33 @@
+---
+- name: Read groups for deployment labels
+  ansible.builtin.getent:
+    database: group
+  register: users_deploy_groups
+  when: users_deploy_users | length > 0
+
+- name: Check deployment groups exist
+  ansible.builtin.assert:
+    that: users_item in users_deploy_groups.ansible_facts.getent_group
+    fail_msg: "Deployment group {{ users_item }} must already exist or be created by users_groups."
+  loop: "{{ users_deploy_users }}"
+  when: not ansible_check_mode
+  loop_control:
+    loop_var: users_item
+
+- name: Prepare deployment files for each existing group
+  ansible.builtin.include_tasks: deploy_group.yml
+  loop: "{{ users_deploy_users }}"
+  loop_control:
+    loop_var: users_deploy_group
+  when: users_deploy_group in users_deploy_groups.ansible_facts.getent_group
+
+- name: Explain deferred deployment checks for new groups
+  ansible.builtin.debug:
+    msg: "Deployment files for {{ users_item }} are deferred in check mode until the group exists."
+  loop: "{{ users_deploy_users }}"
+  when:
+    - ansible_check_mode
+    - users_item not in users_deploy_groups.ansible_facts.getent_group
+  loop_control:
+    loop_var: users_item
+

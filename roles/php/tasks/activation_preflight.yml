@@ -1,0 +1,67 @@
+---
+- name: Reinspect captured PHP directory ancestors before reading configuration
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: "{{ ((_php_activation.files | map(attribute='item.dest') | map('dirname') | list) + (_php_activation.logs | map(attribute='item.dest') | map('dirname') | list) + (_php_activation.directories | map(attribute='item') | list)) | krisx.ops.php_path_ancestors }}"
+  ignore_errors: true
+  register: _php_activation_dirs
+
+- name: Require unchanged safe PHP directory types
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - (item.stat.isdir | default(false) and not (item.stat.islnk | default(false))) or (item.item == '/var/run' and item.stat.islnk | default(false) and item.stat.lnk_source | default('') == '/run')
+    fail_msg: 'A captured PHP ancestor is missing or unsafe. Activation and automatic recovery are withheld; recovery snapshots are retained.'
+  ignore_errors: true
+  register: _php_activation_dirs_safe
+  loop: '{{ _php_activation_dirs.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Reinspect captured PHP files before handler validation
+  ansible.builtin.stat:
+    path: '{{ item.item.dest }}'
+    follow: false
+  loop: '{{ _php_activation.files }}'
+  ignore_errors: true
+  register: _php_activation_files
+  no_log: true
+
+- name: Require the exact installed PHP candidate before handler activation
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isreg | default(false) and not (item.stat.islnk | default(false))
+      - item.stat.checksum == item.item.item.content | hash('sha1')
+      - item.stat.uid == 0 and item.stat.gid == 0
+      - item.stat.mode == ('0600' if item.item.item.kind == 'fpm' else '0644')
+    fail_msg: 'A captured PHP candidate changed after validation. Activation and automatic recovery are withheld to preserve later edits; recovery snapshots are retained.'
+  ignore_errors: true
+  register: _php_activation_files_safe
+  loop: '{{ _php_activation_files.results }}'
+  no_log: true
+
+- name: Reinspect captured PHP log paths before activation
+  ansible.builtin.stat:
+    path: '{{ item.item.dest }}'
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop: '{{ _php_activation.logs }}'
+  ignore_errors: true
+  register: _php_activation_logs
+
+- name: Require safe PHP log paths before activation
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+  ignore_errors: true
+  register: _php_activation_logs_safe
+  loop: '{{ _php_activation_logs.results }}'
+
+- name: Reverify the captured PHP module state before activation
+  ansible.builtin.include_tasks: module_activation_preflight.yml
+
+- name: Record captured PHP path verification failures
+  ansible.builtin.set_fact:
+    _php_activation_preflight_failed: '{{ (_php_activation_dirs.failed | default(false)) or (_php_activation_files.failed | default(false)) or (_php_activation_logs.failed | default(false)) or (_php_activation_dirs_safe.failed | default(false)) or (_php_activation_files_safe.failed | default(false)) or (_php_activation_logs_safe.failed | default(false)) or (_php_module_activation_failed | default(false)) }}'

@@ -1,0 +1,18 @@
+---
+- name: Validate the MongoDB contract before mutation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Guard privileged paths before existing-instance actions
+  ansible.builtin.include_tasks: paths.yml
+  when: mongodb_action != 'validate'
+
+- name: Verify installed binary major before any existing-instance action
+  ansible.builtin.command: /usr/bin/mongod --version
+  register: mongodb_binary_version
+  changed_when: false
+  failed_when: mongodb_binary_version.rc != 0 or 'db version v7.0.' not in mongodb_binary_version.stdout
+  when: mongodb_action not in ['validate', 'install']
+
+- name: Run the requested MongoDB action
+  ansible.builtin.include_tasks: '{{ mongodb_action }}.yml'
+  when: mongodb_action != 'validate'

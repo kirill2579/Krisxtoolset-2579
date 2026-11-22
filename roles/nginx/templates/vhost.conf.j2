@@ -1,0 +1,66 @@
+# project name: {{ nginx_vhost_file }}
+{% set log_target = log.target | default('syslog') %}
+
+{% for server in nginx_conf %}
+{% set log_name = server.log_name | default(server.fpm_socket_name | default(nginx_vhost_file)) %}
+
+server {
+  listen {{ server.listen | default("80") }};
+  server_name {{ server.server_name | join(' ') if server.server_name is iterable and server.server_name is not string else server.server_name }};
+
+{% if server.fpm_socket_name | default(false) or server.fpm_socket_path is defined %}
+  set $fpmsock {{ server | krisx.ops.nginx_fpm_socket(php_fpm_conf | default([]), php_fpm_socket_dir | default('/var/run/fpm')) }};
+{% endif %}
+
+{% if server.folder | default(false) %}
+  set $base_root {{ server.folder }};
+  root $base_root;
+{% endif %}
+
+{% if server.index | default(false) %}
+  index {{ server.index }};
+{% endif %}
+
+{% if server.content | default(false) %}
+{{ server.content | indent(2, true) }}
+{% endif %}
+
+{% for item in server.locations | default([]) %}
+  location {{ item.location }} {
+{% if item.csp is defined %}
+    add_header Content-Security-Policy "{{ item.csp | join('; ') }};" always;
+{% endif %}
+{{ item.content | indent(4, true) }}
+  }
+{% endfor %}
+
+{% if log.nginx.access | default(false) %}
+{% if log_target == 'file' %}
+  access_log /var/log/nginx/{{ log_name }}.access.log {{ log.nginx.access_format | default('main') }} if=$loggable;
+{% elif log_target == 'syslog' %}
+  access_log syslog:server={{ host_syslog }}:{{ host_syslog_port }},tag={{ log_name }}_access {{ log.nginx.access_format | default('main') }} if=$loggable;
+{% elif log_target == 'off' %}
+  access_log off;
+{% else %}
+  access_log off;
+{% endif %}
+{% else %}
+  access_log off;
+{% endif %}
+
+{% if log.nginx.error | default(false) %}
+{% if log_target == 'file' %}
+  error_log /var/log/nginx/{{ log_name }}.error.log warn;
+{% elif log_target == 'syslog' %}
+  error_log syslog:server={{ host_syslog }}:{{ host_syslog_port }},tag={{ log_name }}_error warn;
+{% elif log_target == 'off' %}
+  error_log /dev/null crit;
+{% else %}
+  error_log /dev/null crit;
+{% endif %}
+{% else %}
+  error_log /dev/null crit;
+{% endif %}
+
+}
+{% endfor %}

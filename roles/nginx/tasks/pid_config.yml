@@ -1,0 +1,46 @@
+---
+- name: Inspect the existing main configuration before selecting its PID path
+  ansible.builtin.stat:
+    path: '{{ _nginx_pid_config_file }}'
+    follow: false
+  register: _nginx_pid_config_stat
+
+- name: Require a regular main configuration for PID preservation
+  ansible.builtin.assert:
+    that:
+      - not _nginx_pid_config_stat.stat.exists or (_nginx_pid_config_stat.stat.isreg | default(false) and not (_nginx_pid_config_stat.stat.islnk | default(false)))
+    fail_msg: 'The existing nginx.conf must be a regular file to preserve its PID path safely.'
+
+- name: Reset the observed nginx PID path for this configuration
+  ansible.builtin.set_fact:
+    _nginx_observed_pid_file: ''
+
+- name: Read the existing main configuration without exposing its contents
+  ansible.builtin.slurp:
+    src: '{{ _nginx_pid_config_file }}'
+  register: _nginx_pid_config_contents
+  when: _nginx_pid_config_stat.stat.exists
+  no_log: true
+
+- name: Extract the existing PID without exposing unrelated configuration
+  when: _nginx_pid_config_stat.stat.exists
+  block:
+    - name: Read the exact existing main-context PID argument
+      ansible.builtin.set_fact:
+        _nginx_observed_pid_file: '{{ _nginx_pid_config_contents.content | b64decode | krisx.ops.nginx_pid_directive }}'
+      no_log: true
+  rescue:
+    - name: Report unsupported existing nginx PID configuration
+      ansible.builtin.fail:
+        msg: 'Cannot determine a unique main-context PID path from the existing nginx.conf. Require one explicit unquoted pid /absolute/path; directive and balanced syntax. Included or compiled PID defaults are not guessed. No configuration or PID file was changed.'
+
+- name: Require a supported existing nginx PID path
+  ansible.builtin.assert:
+    that:
+      - _nginx_observed_pid_file is match('^/[A-Za-z0-9_./-]+\Z')
+      - not _nginx_observed_pid_file.endswith('/')
+      - "'..' not in _nginx_observed_pid_file.split('/')"
+      - "'.' not in _nginx_observed_pid_file.split('/')"
+      - "'//' not in _nginx_observed_pid_file"
+    fail_msg: 'PID preservation requires one unquoted, normalized absolute pid path in nginx.conf. Resolve unsupported syntax manually; the role will not guess or migrate a running master.'
+  when: _nginx_pid_config_stat.stat.exists

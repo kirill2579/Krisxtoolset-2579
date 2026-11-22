@@ -1,0 +1,17 @@
+---
+namespace: krisx
+name: ops
+version: 0.1.0
+readme: README.md
+authors:
+  - KrisX
+description: Explicit Linux host provisioning roles for operations teams.
+tags: [linux, infrastructure, web]
+dependencies:
+  ansible.posix: ">=1.5.0"
+  community.general: ">=5.2.0"
+build_ignore:
+  - .git
+  - .gitignore
+  - .github
+  - "*.tar.gz"

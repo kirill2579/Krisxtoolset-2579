@@ -1,0 +1,10 @@
+---
+- name: Require explicit one-time bootstrap permission
+  ansible.builtin.assert:
+    that:
+      - mongodb_bootstrap | bool
+
+- name: Bootstrap or verify the expected replica set
+  ansible.builtin.include_tasks: client.yml
+  vars:
+    mongodb_client_action: bootstrap

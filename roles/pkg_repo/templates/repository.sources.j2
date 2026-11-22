@@ -1,0 +1,6 @@
+# Managed by Ansible role pkg_repo
+Types: deb
+URIs: {{ item.uri }}
+Suites: {{ item.suite }}
+Components: {{ item.components | join(' ') }}
+Signed-By: /etc/apt/keyrings/pkg-repo-{{ item.name }}.asc

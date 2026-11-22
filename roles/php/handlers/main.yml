@@ -1,0 +1,10 @@
+---
+- name: Activate validated PHP configuration transactions
+  ansible.builtin.include_tasks: activate.yml
+  listen: PHP configuration installed
+  loop: '{{ _php_pending_transactions | default([]) }}'
+  loop_control:
+    loop_var: _php_activation
+    label: '{{ _php_activation.backup }}'
+  when: not ansible_check_mode
+  no_log: true

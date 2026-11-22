@@ -1,0 +1,26 @@
+---
+# Debian/Ubuntu compile sshd with /run/sshd (historically /var/run/sshd).
+# Package service startup normally creates it, but standalone sshd -t needs it
+# before the first service start on a fresh container. /run is volatile.
+# RedHat-family packages use different persistent paths; leave those to packages.
+- name: Inspect Debian SSH privilege separation directory
+  ansible.builtin.stat:
+    path: /run/sshd
+    follow: false
+  register: _sshd_runtime_directory
+
+- name: Require a real SSH runtime directory or an absent path
+  ansible.builtin.assert:
+    that:
+      - not _sshd_runtime_directory.stat.exists or (_sshd_runtime_directory.stat.isdir | default(false) and not (_sshd_runtime_directory.stat.islnk | default(false)))
+    fail_msg: '/run/sshd must be a real directory or absent; refusing to replace or follow another file type.'
+
+- name: Ensure Debian SSH privilege separation directory exists
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+    recurse: false

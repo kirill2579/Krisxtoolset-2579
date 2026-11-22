@@ -1,0 +1,183 @@
+---
+- name: Disable pending nginx reload before preparing another configuration
+  ansible.builtin.set_fact:
+    _nginx_apply_complete: false
+
+- name: Validate nginx input types
+  ansible.builtin.assert:
+    that:
+      - nginx_config_dir is string
+      - nginx_vhosts_dir is string
+      - nginx_template is string and nginx_template | length > 0
+      - nginx_template_dir is string and nginx_template_dir | length > 0
+      - nginx_files_dir is string and nginx_files_dir | length > 0
+      - nginx_vhost_template is string and nginx_vhost_template | length > 0
+      - nginx_fastcgi_params_template is string
+      - nginx_binary is string
+      - nginx_manage_service is boolean
+      - nginx_service_name is string and nginx_service_name | length > 0
+      - nginx_service_config_file is string
+      - nginx_vhost_file is defined
+    fail_msg: 'Provide nginx template paths, service settings and nginx_vhost_file.'
+
+- name: Validate nginx destinations
+  ansible.builtin.assert:
+    that:
+      - item is match('^/[A-Za-z0-9_./-]+\Z')
+      - item != '/'
+      - not item.endswith('/')
+      - "'..' not in item.split('/')"
+      - "'.' not in item.split('/')"
+      - "'//' not in item"
+    fail_msg: 'nginx paths must be absolute, normalized paths without whitespace or nginx metacharacters.'
+  loop:
+    - '{{ nginx_config_dir }}'
+    - '{{ nginx_vhosts_dir }}'
+    - '{{ nginx_binary }}'
+    - '{{ nginx_service_config_file }}'
+
+- name: Validate nginx vhost filename and service configuration
+  ansible.builtin.assert:
+    that:
+      - nginx_vhost_file is string
+      - nginx_vhost_file is match('^[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
+      - not nginx_manage_service or nginx_service_config_file == nginx_config_dir ~ '/nginx.conf'
+    fail_msg: 'nginx_vhost_file must be a filename without directories. The managed service must use nginx_config_dir/nginx.conf; otherwise disable nginx_manage_service.'
+
+- name: Validate bundled main configuration inputs
+  ansible.builtin.assert:
+    that:
+      - nginx_user is string and nginx_user | length > 0
+      - nginx_pid_file is string
+      - nginx_pid_file == '' or nginx_pid_file is match('^/[A-Za-z0-9_./-]+\Z')
+      - nginx_pid_file == '' or not nginx_pid_file.endswith('/')
+      - "'..' not in nginx_pid_file.split('/')"
+      - "'.' not in nginx_pid_file.split('/')"
+      - "'//' not in nginx_pid_file"
+      - nginx_mime_types_file is string
+      - nginx_mime_types_file is match('^/[A-Za-z0-9_./-]+\Z')
+      - nginx_filter_access_log is sequence and nginx_filter_access_log is not string and nginx_filter_access_log is not mapping
+    fail_msg: 'The bundled main template requires nginx_user, nginx_mime_types_file, a supported nginx_pid_file (or empty for auto), and a nginx_filter_access_log list.'
+  when: nginx_template in ['nginx.conf.j2', role_path ~ '/templates/nginx.conf.j2']
+
+- name: Validate syslog destination only when a bundled template uses it
+  ansible.builtin.assert:
+    that:
+      - host_syslog is defined and host_syslog is string and host_syslog | length > 0
+      - host_syslog_port is defined
+      - host_syslog_port | string is match('^[0-9]+\Z')
+      - host_syslog_port | int >= 1 and host_syslog_port | int <= 65535
+    fail_msg: 'Enabled syslog logging requires host_syslog and host_syslog_port (1..65535).'
+  when:
+    - nginx_template in ['nginx.conf.j2', role_path ~ '/templates/nginx.conf.j2'] or nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2']
+    - log.target | default('syslog') == 'syslog'
+    - (log.nginx.access | default(false)) or (log.nginx.error | default(false))
+
+- name: Validate bundled vhost configuration container
+  ansible.builtin.assert:
+    that:
+      - nginx_conf is defined
+      - nginx_conf is sequence and nginx_conf is not string and nginx_conf is not mapping
+    fail_msg: 'The bundled vhost template requires nginx_conf as a list of server mappings (an empty list is allowed).'
+  when: nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2']
+
+- name: Validate bundled server mappings
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.server_name is defined
+      - item.server_name is string or (item.server_name is sequence and item.server_name is not mapping)
+      - item.locations | default([]) is sequence and item.locations | default([]) is not string and item.locations | default([]) is not mapping
+    fail_msg: 'Each nginx_conf server requires server_name (string or list) and an optional locations list.'
+  loop: "{{ nginx_conf | default([]) if nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2'] else [] }}"
+  loop_control:
+    label: server
+  when: nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2']
+  no_log: true
+
+- name: Validate bundled location mappings
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.location is defined and item.1.location is string
+      - item.1.content is defined and item.1.content is string
+      - item.1.csp is not defined or (item.1.csp is sequence and item.1.csp is not string and item.1.csp is not mapping)
+    fail_msg: 'Each location requires location/content strings; csp, when provided, must be a list of directives.'
+  loop: "{{ (nginx_conf | default([]) if nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2'] else []) | subelements('locations', skip_missing=True) }}"
+  loop_control:
+    label: location
+  when: nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2']
+  no_log: true
+
+- name: Validate effective syslog tag names before writing configuration
+  ansible.builtin.assert:
+    that:
+      - _nginx_log_name is string
+      - _nginx_log_name is match('^[A-Za-z0-9_]+\Z')
+      - _nginx_log_name | length <= (25 if log.nginx.access | default(false) else 26)
+    fail_msg: 'For syslog, set server.log_name to letters/digits/underscores, at most 25 characters with access logging or 26 with error logging. nginx limits the final tag including its suffix to 32 bytes.'
+  vars:
+    _nginx_log_name: '{{ item.log_name | default(item.fpm_socket_name | default(nginx_vhost_file)) }}'
+  loop: "{{ nginx_conf | default([]) if nginx_vhost_template in ['vhost.conf.j2', role_path ~ '/templates/vhost.conf.j2'] else [] }}"
+  loop_control:
+    label: server syslog tag
+  when:
+    - log.target | default('syslog') == 'syslog'
+    - (log.nginx.access | default(false)) or (log.nginx.error | default(false))
+  no_log: true
+
+- name: Build the managed nginx template list
+  ansible.builtin.set_fact:
+    _nginx_template_files:
+      - {src: '{{ nginx_template }}', dest: '{{ nginx_config_dir }}/nginx.conf'}
+      - {src: '{{ nginx_vhost_template }}', dest: '{{ nginx_vhosts_dir }}/{{ nginx_vhost_file }}.conf'}
+
+- name: Retain explicitly configured legacy snippet templates
+  ansible.builtin.set_fact:
+    _nginx_template_files: "{{ _nginx_template_files + [{'src': nginx_template_dir ~ '/http_debug_headers', 'dest': nginx_config_dir ~ '/http_debug_headers'}, {'src': nginx_template_dir ~ '/spa_security', 'dest': nginx_config_dir ~ '/spa_security'}] }}"
+  when: nginx_template_dir != role_path ~ '/templates'
+
+- name: Add an explicitly requested fastcgi_params template
+  ansible.builtin.set_fact:
+    _nginx_template_files: "{{ _nginx_template_files + [{'src': nginx_fastcgi_params_template, 'dest': nginx_config_dir ~ '/fastcgi_params'}] }}"
+  when: nginx_fastcgi_params_template | length > 0
+
+- name: Enumerate and read nginx static files on the controller
+  ansible.builtin.set_fact:
+    _nginx_static_manifest: '{{ nginx_files_dir | krisx.ops.nginx_static_manifest(nginx_config_dir) }}'
+
+- name: Combine static files and templates for nginx preflight
+  ansible.builtin.set_fact:
+    _nginx_destination_files: '{{ _nginx_static_manifest.files + _nginx_template_files }}'
+    _nginx_managed_files: '{{ _nginx_static_manifest.files }}'
+    _nginx_directories: '{{ (_nginx_static_manifest.directories + [nginx_vhosts_dir]) | krisx.ops.nginx_managed_directories }}'
+
+- name: Require distinct nginx destinations
+  ansible.builtin.assert:
+    that:
+      - _nginx_destination_files | map(attribute='dest') | unique | length == _nginx_destination_files | length
+    fail_msg: 'Managed nginx static file and template destinations must be distinct; remove the conflicting static file or template override.'
+
+- name: Keep managed nginx files separate from directory paths
+  ansible.builtin.assert:
+    that:
+      - item.1 != item.0.dest
+      - not item.1.startswith(item.0.dest ~ '/')
+    fail_msg: 'A managed nginx filename cannot also be a managed directory or one of its parent directories.'
+  loop: '{{ _nginx_destination_files | product(_nginx_directories) | list }}'
+  loop_control:
+    label: '{{ item.0.dest }} / {{ item.1 }}'
+
+- name: Preserve the bundled nginx configuration PID path
+  ansible.builtin.import_tasks: prepare_pid.yml
+  when: nginx_template in ['nginx.conf.j2', role_path ~ '/templates/nginx.conf.j2']
+
+# Render the whole set before package installation or any live file mutation.
+# Contents can include private upstream credentials, so do not print the facts.
+- name: Render every nginx template on the controller
+  ansible.builtin.set_fact:
+    _nginx_managed_files: "{{ _nginx_managed_files + [{'dest': item.dest, 'content': lookup('ansible.builtin.template', item.src, template_vars={'template_destpath': item.dest})}] }}"
+  loop: '{{ _nginx_template_files }}'
+  loop_control:
+    label: '{{ item.dest }}'
+  no_log: true

@@ -1,0 +1,18 @@
+---
+- name: Validate users role inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Manage accounts and groups
+  ansible.builtin.import_tasks: accounts.yml
+
+- name: Manage authorized keys
+  ansible.builtin.import_tasks: ssh_keys.yml
+
+- name: Manage sudo rules
+  ansible.builtin.import_tasks: sudo.yml
+
+- name: Manage SSH certificate principals
+  ansible.builtin.import_tasks: principals.yml
+
+- name: Prepare explicitly requested deployment labels
+  ansible.builtin.import_tasks: deploy.yml

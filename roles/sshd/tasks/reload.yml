@@ -1,0 +1,29 @@
+---
+- name: Validate installed SSH server configuration before reload
+  ansible.builtin.command:
+    cmd: "{{ sshd_validate_cmd | replace('%s', '/etc/ssh/sshd_config') }}"
+  register: _sshd_reload_validation
+  changed_when: false
+
+- name: Inspect SSH server service state
+  ansible.builtin.service_facts:
+  register: _sshd_services
+
+- name: Reload the running SSH server without starting a stopped service
+  ansible.builtin.service:
+    name: "{{ 'ssh' if ansible_facts.os_family == 'Debian' else 'sshd' }}"
+    state: reloaded
+  vars:
+    _sshd_service: "{{ 'ssh' if ansible_facts.os_family == 'Debian' else 'sshd' }}"
+    _sshd_service_state: "{{ _sshd_services.ansible_facts.services.get(_sshd_service ~ '.service', _sshd_services.ansible_facts.services.get(_sshd_service, {})).get('state', 'unknown') }}"
+  when:
+    - _sshd_reload_validation.rc == 0
+    - _sshd_service_state == 'running'
+
+- name: Report a stopped or unknown SSH server service
+  ansible.builtin.debug:
+    msg: 'Configuration is validated; SSH service is not running or was not found, so it was not started/reloaded.'
+  vars:
+    _sshd_service: "{{ 'ssh' if ansible_facts.os_family == 'Debian' else 'sshd' }}"
+    _sshd_service_state: "{{ _sshd_services.ansible_facts.services.get(_sshd_service ~ '.service', _sshd_services.ansible_facts.services.get(_sshd_service, {})).get('state', 'unknown') }}"
+  when: _sshd_service_state != 'running'

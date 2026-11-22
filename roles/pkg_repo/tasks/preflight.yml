@@ -1,0 +1,47 @@
+---
+- name: Inspect the exact source path without following symlinks
+  ansible.builtin.stat:
+    path: '/etc/apt/sources.list.d/pkg-repo-{{ item.name }}.sources'
+    follow: false
+  register: _pkg_repo_source
+
+- name: Inspect the exact key path without following symlinks
+  ansible.builtin.stat:
+    path: '/etc/apt/keyrings/pkg-repo-{{ item.name }}.asc'
+    follow: false
+    checksum_algorithm: sha256
+  register: _pkg_repo_key
+
+- name: Refuse non-regular managed paths and orphan keys
+  ansible.builtin.assert:
+    that:
+      - not _pkg_repo_source.stat.exists or (_pkg_repo_source.stat.isreg | default(false))
+      - not _pkg_repo_key.stat.exists or (_pkg_repo_key.stat.isreg | default(false))
+      - not _pkg_repo_key.stat.exists or _pkg_repo_source.stat.exists
+    quiet: true
+    fail_msg: 'Refusing unknown paths or an orphan key. Inspect these exact files before deliberate recovery.'
+
+- name: Read the existing source ownership marker
+  ansible.builtin.slurp:
+    src: '/etc/apt/sources.list.d/pkg-repo-{{ item.name }}.sources'
+  register: _pkg_repo_source_content
+  when: _pkg_repo_source.stat.exists
+
+- name: Refuse to replace or remove an unowned source
+  ansible.builtin.assert:
+    that:
+      - (_pkg_repo_source_content.content | b64decode).startswith('# Managed by Ansible role pkg_repo\n')
+    quiet: true
+    fail_msg: 'The existing source lacks the pkg_repo ownership marker; migrate it manually instead of overwriting it.'
+  when: _pkg_repo_source.stat.exists
+
+- name: Remember pending changes before modifying repository files
+  ansible.builtin.set_fact:
+    _pkg_repo_needs_refresh: true
+  when: >-
+    (item.state | default('present') == 'absent' and
+     (_pkg_repo_source.stat.exists or _pkg_repo_key.stat.exists)) or
+    (item.state | default('present') == 'present' and
+     (not _pkg_repo_source.stat.exists or not _pkg_repo_key.stat.exists or
+      (_pkg_repo_key.stat.checksum | default('')) != (item.key_checksum | regex_replace('^sha256:', '') | lower) or
+      (_pkg_repo_source_content.content | default('') | b64decode) != lookup('ansible.builtin.template', 'repository.sources.j2')))

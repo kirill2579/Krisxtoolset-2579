@@ -1,0 +1,17 @@
+---
+- name: Read account homes after account management
+  ansible.builtin.getent:
+    database: passwd
+  register: users_passwd
+  when: users_list | selectattr('ssh_key', 'defined') | list | length > 0
+
+- name: Manage each explicitly configured SSH key set
+  ansible.builtin.include_tasks: ssh_user.yml
+  loop: "{{ users_list }}"
+  loop_control:
+    loop_var: users_account
+    label: "{{ users_account.name }}"
+  when:
+    - users_account.ssh_key is defined
+    - users_account.state | default('present') == 'present'
+  no_log: true

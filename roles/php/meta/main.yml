@@ -1,0 +1,13 @@
+dependencies: []
+galaxy_info:
+  author: KrisX
+  description: Install and transactionally configure versioned PHP CLI and FPM on Ubuntu
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  role_name: php
+  namespace: krisx

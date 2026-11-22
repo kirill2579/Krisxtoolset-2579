@@ -1,0 +1,7 @@
+---
+- name: Require Linux with an APT-based distribution
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system | default('') == 'Linux'
+      - ansible_facts.os_family | default('') == 'Debian'
+    fail_msg: 'nginx currently supports APT-based Linux only. Gather facts before using the role.'

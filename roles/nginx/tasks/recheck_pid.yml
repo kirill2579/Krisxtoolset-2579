@@ -1,0 +1,22 @@
+---
+# APT may have created a package configuration and started its master after
+# preflight rendering. Reject a different baseline instead of changing its PID.
+- name: Reinspect the nginx PID baseline after package installation
+  ansible.builtin.import_tasks: pid_config.yml
+  vars:
+    _nginx_pid_config_file: '{{ nginx_config_dir }}/nginx.conf'
+
+- name: Keep the rendered PID path consistent with the installed baseline
+  ansible.builtin.assert:
+    that:
+      - not _nginx_pid_config_stat.stat.exists or _nginx_effective_pid_file == _nginx_observed_pid_file
+    fail_msg: 'The nginx PID baseline changed after rendering (possibly during package installation). No configuration was written. Re-run with auto PID selection or plan a separate service migration.'
+
+- name: Recheck the nginx runtime before writing or validating configuration
+  ansible.builtin.import_tasks: pid_runtime.yml
+  vars:
+    _nginx_pid_guard_service: '{{ nginx_service_name }}'
+    _nginx_pid_guard_file: '{{ _nginx_effective_pid_file }}'
+    _nginx_pid_guard_config_exists: '{{ _nginx_pid_config_stat.stat.exists }}'
+    _nginx_pid_allow_absent_service: '{{ ansible_check_mode and not _nginx_pid_config_stat.stat.exists }}'
+  when: nginx_manage_service

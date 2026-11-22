@@ -1,0 +1,21 @@
+---
+- name: Disable nginx reload until this invocation completes
+  ansible.builtin.set_fact:
+    _nginx_apply_complete: false
+  tags: [always]
+
+- name: Validate nginx platform
+  ansible.builtin.import_tasks: validate_platform.yml
+  tags: [nginx, install, nginx_install, configure, nginx_config]
+
+- name: Validate and render nginx inputs before changing the host
+  ansible.builtin.import_tasks: prepare.yml
+  tags: [nginx, configure, nginx_config]
+
+- name: Install nginx
+  ansible.builtin.import_tasks: nginx_install.yml
+  tags: [nginx, install, nginx_install]
+
+- name: Configure nginx
+  ansible.builtin.import_tasks: nginx_config.yml
+  tags: [nginx, configure, nginx_config]

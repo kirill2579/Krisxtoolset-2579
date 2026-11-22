@@ -1,0 +1,55 @@
+---
+- name: Inspect the explicitly requested PHP CLI binary
+  ansible.builtin.stat:
+    path: '{{ php_cli_binary }}'
+  register: _php_cli_binary_stat
+
+- name: Inspect the alternatives executable
+  ansible.builtin.stat:
+    path: '{{ php_alternatives_binary }}'
+  register: _php_alternatives_stat
+
+- name: Require installed binaries before changing PHP CLI alternatives
+  ansible.builtin.assert:
+    that:
+      - _php_cli_binary_stat.stat.exists
+      - _php_alternatives_stat.stat.exists
+    fail_msg: 'The requested PHP CLI or update-alternatives is missing after installation.'
+  when: not ansible_check_mode
+
+- name: Read the existing PHP alternatives group
+  ansible.builtin.command:
+    argv: ['{{ php_alternatives_binary }}', --query, php]
+  register: _php_cli_query
+  check_mode: false
+  changed_when: false
+  failed_when: _php_cli_query.rc not in [0, 2]
+  when: _php_alternatives_stat.stat.exists
+
+- name: Require the existing alternatives group to use the requested link
+  ansible.builtin.assert:
+    that:
+      - "('Link: ' ~ php_cli_link) in (_php_cli_query.stdout | default('')).splitlines()"
+    fail_msg: 'The existing php alternatives group owns a different link; choose its existing php_cli_link before managing it.'
+  when: _php_cli_query.rc | default(2) == 0
+
+- name: Determine PHP CLI alternative changes
+  ansible.builtin.set_fact:
+    _php_cli_register: "{{ ('Alternative: ' ~ php_cli_binary) not in (_php_cli_query.stdout | default('')).splitlines() }}"
+    _php_cli_select: "{{ ('Value: ' ~ php_cli_binary) not in (_php_cli_query.stdout | default('')).splitlines() or 'Status: auto' in (_php_cli_query.stdout | default('')).splitlines() }}"
+
+- name: Predict explicit PHP CLI alternative changes
+  ansible.builtin.debug:
+    msg: 'Would register/select {{ php_cli_binary }} as {{ php_cli_link }} when needed. Missing binaries may be supplied by the predicted package installation.'
+  changed_when: _php_cli_register or _php_cli_select
+  when: ansible_check_mode
+
+- name: Register only a missing PHP CLI alternative
+  ansible.builtin.command:
+    argv: ['{{ php_alternatives_binary }}', --install, '{{ php_cli_link }}', php, '{{ php_cli_binary }}', "{{ php_cli_default | replace('.', '') }}"]
+  when: not ansible_check_mode and _php_cli_register
+
+- name: Select PHP CLI only when the current target differs
+  ansible.builtin.command:
+    argv: ['{{ php_alternatives_binary }}', --set, php, '{{ php_cli_binary }}']
+  when: not ansible_check_mode and _php_cli_select

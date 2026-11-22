@@ -1,0 +1,86 @@
+---
+- name: Reject legacy sshd variable names before changes
+  ansible.builtin.assert:
+    that:
+      - ssh_trusted_user_ca_keys is not defined
+      - ssh_trusted_user_ca_keys_file is not defined
+    fail_msg: "Legacy sshd inputs are no longer supported; rename them to the documented sshd_ variables."
+
+- name: Validate SSH server platform and input containers
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family | default('') in ['Debian', 'RedHat']
+      - sshd_config is mapping
+      - sshd_match_blocks is sequence and sshd_match_blocks is not string and sshd_match_blocks is not mapping
+      - sshd_trusted_user_ca_keys is sequence and sshd_trusted_user_ca_keys is not string and sshd_trusted_user_ca_keys is not mapping
+      - sshd_trusted_user_ca_keys_file is string
+      - sshd_validate_cmd is string
+    fail_msg: 'sshd requires Debian/RedHat facts, a config mapping, Match/CA lists and string paths/validator.'
+
+- name: Validate SSH server input relationships
+  ansible.builtin.assert:
+    that:
+      - sshd_config | length > 0 or (sshd_match_blocks | length == 0 and sshd_trusted_user_ca_keys | length == 0)
+      - sshd_trusted_user_ca_keys_file is match('^/[^\x00-\x20\x7f]+$')
+      - "sshd_trusted_user_ca_keys_file is not search('[\x00-\x20\x7f]')"
+      - sshd_trusted_user_ca_keys_file not in ['/etc/ssh/sshd_config', '/etc/ssh/ssh_config']
+      - "'..' not in sshd_trusted_user_ca_keys_file.split('/')"
+      - "'.' not in sshd_trusted_user_ca_keys_file.split('/')"
+      - "'//' not in sshd_trusted_user_ca_keys_file"
+      - not sshd_trusted_user_ca_keys_file.endswith('/')
+      - "sshd_validate_cmd | regex_findall('%s') | length == 1"
+      - "sshd_validate_cmd is not search('[\x00-\x1f\x7f]')"
+    fail_msg: 'Provide a full nonempty sshd_config for Match/CA deployment, an absolute CA filename and a validator with one %s placeholder.'
+
+- name: Validate global SSH server directives
+  ansible.builtin.include_tasks: validate_settings.yml
+  vars:
+    _sshd_settings: '{{ sshd_config }}'
+
+- name: Validate Match block structure
+  ansible.builtin.assert:
+    that:
+      - sshd_item is mapping
+      - sshd_item.condition is defined and sshd_item.condition is string
+      - sshd_item.settings is defined and sshd_item.settings is mapping
+      - sshd_item.keys() | difference(['condition', 'settings']) | length == 0
+      - sshd_item.condition | trim | length > 0
+      - "sshd_item.condition is not search('[\x00-\x1f\x7f]')"
+      - sshd_item.settings | length > 0
+    fail_msg: 'Each Match block requires a single-line condition and a nonempty settings mapping.'
+  loop: '{{ sshd_match_blocks }}'
+  loop_control:
+    loop_var: sshd_item
+    label: Match block
+
+- name: Validate Match directives
+  ansible.builtin.include_tasks: validate_settings.yml
+  vars:
+    _sshd_settings: '{{ _sshd_match.settings }}'
+  loop: '{{ sshd_match_blocks }}'
+  loop_control:
+    loop_var: _sshd_match
+    label: Match block
+
+- name: Require the managed CA path in the explicit global configuration
+  ansible.builtin.assert:
+    that:
+      - _sshd_ca_directives | length == 1
+      - _sshd_ca_directives[0].value == sshd_trusted_user_ca_keys_file
+    fail_msg: 'When deploying CA keys, set global TrustedUserCAKeys to sshd_trusted_user_ca_keys_file explicitly.'
+  vars:
+    _sshd_ca_directives: "{{ sshd_config | dict2items | selectattr('key', 'match', '(?i)^trustedusercakeys$') | list }}"
+  when: sshd_trusted_user_ca_keys | length > 0
+
+- name: Validate public CA key lines
+  ansible.builtin.assert:
+    that:
+      - sshd_item is string
+      - "'-cert-v01@openssh.com' not in sshd_item.split(' ')[0]"
+      - "sshd_item is match('^[A-Za-z0-9][A-Za-z0-9@._+-]* [A-Za-z0-9+/]+={0,2}( [^\x00-\x1f\x7f]*)?$')"
+      - "sshd_item is not search('[\x00-\x1f\x7f]')"
+    fail_msg: 'Each CA entry must be one OpenSSH public-key line, without options or control characters.'
+  loop: '{{ sshd_trusted_user_ca_keys }}'
+  loop_control:
+    loop_var: sshd_item
+    label: public CA key

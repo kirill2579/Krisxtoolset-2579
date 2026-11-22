@@ -1,0 +1,23 @@
+---
+- name: Install the non-secret TLS preflight validator
+  ansible.builtin.copy:
+    src: validate-tls.py
+    dest: /etc/mongodb-krisx/validate-tls.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Validate service certificate chain, purposes, SANs, lifetime and matching private key
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/runuser
+      - --user
+      - mongodb
+      - --
+      - /usr/bin/python3
+      - /etc/mongodb-krisx/validate-tls.py
+      - '{{ mongodb_tls_certificate_key_file }}'
+      - '{{ mongodb_tls_ca_file }}'
+      - '{{ (mongodb_members | selectattr("inventory_host", "equalto", inventory_hostname) | first).host.split(":")[0] }}'
+  changed_when: false
+  no_log: true

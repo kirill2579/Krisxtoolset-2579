@@ -1,0 +1,23 @@
+---
+# Internal gates are evaluated for the current host and invocation, not cached.
+_system_update_container_types:
+  - container
+  - containerd
+  - docker
+  - linux_vserver
+  - lxc
+  - lxc-libvirt
+  - openvz
+  - podman
+  - systemd-nspawn
+_system_update_is_container: >-
+  {{ (ansible_facts.get('virtualization_role', '') != 'host'
+      and ansible_facts.get('virtualization_type', '') in _system_update_container_types)
+     or (ansible_facts.get('virtualization_tech_guest', [])
+         | intersect(_system_update_container_types) | length > 0) }}
+_system_update_virtualization_known: >-
+  {{ ansible_facts.get('virtualization_role', '') in ['guest', 'host', 'NA']
+     and ansible_facts.get('virtualization_type', '') | length > 0 }}
+_system_update_reboot_allowed: >-
+  {{ system_update_reboot and _system_update_virtualization_known
+     and not _system_update_is_container and not ansible_check_mode }}

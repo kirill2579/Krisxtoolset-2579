@@ -1,0 +1,5 @@
+---
+- name: Manage users and explicit collections on the current primary only
+  ansible.builtin.include_tasks: client.yml
+  vars:
+    mongodb_client_action: manage

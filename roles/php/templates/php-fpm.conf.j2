@@ -1,0 +1,14 @@
+[global]
+{% if log.target | default('file') == 'syslog' %}
+error_log = syslog
+{% elif log.target | default('file') == 'off' %}
+error_log = /dev/null
+{% else %}
+error_log = {{ php_fpm_main_log_file }}
+{% endif %}
+log_level = notice
+syslog.ident = php{{ php_version }}-fpm
+syslog.facility = daemon
+{% for pool in _php_version_pools %}
+include={{ php_fpm_config_dir }}/{{ php_version }}/{{ pool.fpm_socket_name }}.fpm
+{% endfor %}

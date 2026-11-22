@@ -1,0 +1,14 @@
+---
+- name: Disable reload until this invocation completes
+  ansible.builtin.set_fact:
+    _sshd_apply_complete: false
+    _sshd_keep_stage: false
+    _sshd_config_install: {}
+    _sshd_ca_install: {}
+
+- name: Validate SSH server inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Configure SSH server
+  ansible.builtin.include_tasks: configure_ssh.yml
+  when: sshd_config | length > 0

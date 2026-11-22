@@ -1,0 +1,37 @@
+---
+- name: Refresh APT cache and safely upgrade packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ system_update_apt_cache_valid_time }}"
+    lock_timeout: "{{ system_update_apt_lock_timeout }}"
+    upgrade: safe
+    force_apt_get: true
+    fail_on_autoremove: true
+
+- name: Check the Debian reboot marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+    get_checksum: false
+    get_attributes: false
+    get_mime: false
+  register: system_update_reboot_marker
+
+- name: Report a required reboot that will not be performed
+  ansible.builtin.debug:
+    msg: >-
+      A reboot-required marker exists. Automatic reboot is skipped:
+      requested={{ system_update_reboot }},
+      check_mode={{ ansible_check_mode }},
+      container={{ _system_update_is_container }},
+      virtualization_known={{ _system_update_virtualization_known }}.
+      Schedule any required reboot separately; manage containers through their host.
+  when:
+    - system_update_reboot_marker.stat.exists
+    - not _system_update_reboot_allowed
+
+- name: Reboot an eligible host when required and explicitly enabled
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ system_update_reboot_timeout }}"
+  when:
+    - system_update_reboot_marker.stat.exists
+    - _system_update_reboot_allowed

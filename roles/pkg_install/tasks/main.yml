@@ -1,0 +1,62 @@
+---
+- name: Validate the package list
+  ansible.builtin.assert:
+    that:
+      - pkg_install_apt_no_service_start is boolean
+      - pkg_install is sequence
+      - pkg_install is not string
+      - pkg_install is not mapping
+    quiet: true
+    fail_msg: 'pkg_install must be a list; pkg_install_apt_no_service_start must be boolean.'
+
+# Validate every entry before changing the first package.
+- name: Validate package entries
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name is string
+      - item.name | trim | length > 0
+      - item.state | default('present') in ['present', 'latest', 'absent']
+      - item.keys() | difference(['name', 'state']) | length == 0
+    quiet: true
+    fail_msg: 'Each package needs a non-empty name and an optional state: present, latest or absent.'
+  loop: '{{ pkg_install }}'
+
+# The generic package action gathers its own facts; only the APT guard needs them early.
+- name: Detect the package manager before enabling the APT service guard
+  ansible.builtin.setup:
+    gather_subset: ['!all']
+    filter: ansible_pkg_mgr
+  when:
+    - pkg_install_apt_no_service_start
+    - pkg_install | length > 0
+    - ansible_facts.pkg_mgr is not defined
+
+- name: Require APT for the explicitly requested service startup guard
+  ansible.builtin.assert:
+    that: ansible_facts.pkg_mgr | default('') == 'apt'
+    quiet: true
+    fail_msg: 'pkg_install_apt_no_service_start is supported only with APT.'
+  when:
+    - pkg_install_apt_no_service_start
+    - pkg_install | length > 0
+
+- name: Manage APT packages without maintainer-script service starts
+  ansible.builtin.apt:
+    name: '{{ item.name }}'
+    state: "{{ item.state | default('present') }}"
+    policy_rc_d: 101
+  loop: '{{ pkg_install }}'
+  loop_control:
+    label: "{{ item.name }} ({{ item.state | default('present') }})"
+  when: pkg_install_apt_no_service_start
+
+- name: Manage packages with the detected package manager
+  ansible.builtin.package:
+    name: '{{ item.name }}'
+    state: "{{ item.state | default('present') }}"
+  loop: '{{ pkg_install }}'
+  loop_control:
+    label: "{{ item.name }} ({{ item.state | default('present') }})"
+  when: not pkg_install_apt_no_service_start

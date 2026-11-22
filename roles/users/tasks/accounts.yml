@@ -1,0 +1,47 @@
+---
+- name: Ensure present groups exist
+  ansible.builtin.group:
+    name: "{{ users_item.name }}"
+    gid: "{{ users_item.gid | default(omit) }}"
+    state: present
+    system: "{{ users_item.system | default(false) }}"
+  loop: "{{ users_groups }}"
+  when: users_item.state | default('present') == 'present'
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"
+
+- name: Manage explicitly listed user accounts
+  ansible.builtin.user:
+    name: "{{ users_item.name }}"
+    comment: "{{ users_item.full_name | default(users_item.name) }}"
+    uid: "{{ users_item.uid | default(omit) }}"
+    shell: "{{ users_item.shell | default('/bin/bash') }}"
+    group: "{{ users_item.primary_group | default(omit) }}"
+    groups: "{{ users_item.groups | default([]) }}"
+    append: true
+    state: "{{ users_item.state | default('present') }}"
+    home: "{{ users_item.home | default(omit) }}"
+    create_home: true
+    expires: "{{ users_item.expires | default(omit) }}"
+    password_expire_max: "{{ users_item.password_expire_max | default(omit) }}"
+    password_expire_min: "{{ users_item.password_expire_min | default(omit) }}"
+    remove: "{{ users_item.remove | default(false) }}"
+    password: "{{ users_item.password | default(omit) }}"
+    system: "{{ users_item.system | default(false) }}"
+    update_password: "{{ users_item.update_password | default('always') }}"
+  loop: "{{ users_list }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"
+  no_log: true
+
+- name: Remove explicitly absent groups after user changes
+  ansible.builtin.group:
+    name: "{{ users_item.name }}"
+    state: absent
+  loop: "{{ users_groups }}"
+  when: users_item.state | default('present') == 'absent'
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"

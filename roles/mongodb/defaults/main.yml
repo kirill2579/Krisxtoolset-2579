@@ -1,0 +1,22 @@
+---
+mongodb_action: validate
+mongodb_version: '7.0'
+mongodb_replica_set: ''
+# Exactly three entries: {id: 0, inventory_host: actual_host, host: actual.fqdn:27017}.
+mongodb_members: []
+mongodb_port: 27017
+mongodb_bind_ip: '127.0.0.1'
+mongodb_data_dir: /var/lib/mongodb-krisx
+mongodb_config_file: /etc/mongodb-krisx/mongod.yml
+mongodb_tls_certificate_key_file: ''
+mongodb_tls_ca_file: ''
+mongodb_shared_keyfile: ''
+mongodb_admin_user: krisx_admin
+mongodb_admin_password: ''
+mongodb_bootstrap: false
+mongodb_config:
+  operationProfiling:
+    mode: 'off'
+mongodb_users: []
+# MongoDB databases materialize when collections/data are created.
+mongodb_collections: []

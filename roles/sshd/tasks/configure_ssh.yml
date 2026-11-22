@@ -1,0 +1,33 @@
+---
+- name: Prepare Debian SSH runtime directory before validation
+  ansible.builtin.import_tasks: prepare_runtime.yml
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Predict SSH server changes in check mode
+  when: ansible_check_mode
+  block:
+    - name: Predict SSH server configuration
+      ansible.builtin.template:
+        src: sshd_config.j2
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0600'
+        validate: '{{ sshd_validate_cmd }}'
+
+    - name: Predict public CA file
+      ansible.builtin.copy:
+        dest: '{{ sshd_trusted_user_ca_keys_file }}'
+        content: "{{ sshd_trusted_user_ca_keys | join('\n') ~ '\n' }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: sshd_trusted_user_ca_keys | length > 0
+
+    - name: Explain check mode validation limit
+      ansible.builtin.debug:
+        msg: 'Check mode predicts runtime-directory and file differences without creating them; target sshd/CA parsers and service reload are not executed.'
+
+- name: Stage and apply SSH server configuration
+  ansible.builtin.include_tasks: apply.yml
+  when: not ansible_check_mode

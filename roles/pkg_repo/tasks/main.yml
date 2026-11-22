@@ -1,0 +1,62 @@
+---
+- name: Validate the repository list
+  ansible.builtin.assert:
+    that:
+      - pkg_repo is sequence
+      - pkg_repo is not string
+      - pkg_repo is not mapping
+    quiet: true
+    fail_msg: 'pkg_repo must be a list of repository dictionaries.'
+
+# Validate the complete request before installing packages or changing files.
+- name: Validate repository entries
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name is string
+      - item.name is match('^[a-z0-9][a-z0-9_-]{0,63}\Z')
+      - item.state | default('present') in ['present', 'absent']
+      - item.keys() | difference(['name', 'state', 'uri', 'suite', 'components', 'key_url', 'key_checksum']) | length == 0
+    quiet: true
+    fail_msg: 'Each repository needs a safe unique name and state present or absent; unknown options are rejected.'
+  loop: '{{ pkg_repo }}'
+
+- name: Require unique repository names
+  ansible.builtin.assert:
+    that:
+      - pkg_repo | map(attribute='name') | unique | length == pkg_repo | length
+    quiet: true
+
+- name: Validate enabled repository settings
+  ansible.builtin.assert:
+    that:
+      - item.uri is defined and item.uri is string
+      - item.uri is match('^https?://[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9._~%+/-]*)?\Z')
+      - item.suite is defined and item.suite is string
+      - item.suite is match('^[A-Za-z0-9][A-Za-z0-9._-]*\Z')
+      - item.components is defined and item.components is sequence and item.components is not string and item.components is not mapping
+      - item.components | length > 0
+      - item.components | select('string') | list | length == item.components | length
+      - item.components | select('match', '^[A-Za-z0-9][A-Za-z0-9._/-]*\Z') | list | length == item.components | length
+      - item.key_url is defined and item.key_url is string
+      - item.key_url is match('^https://[^\s#]+\Z')
+      - item.key_checksum is defined and item.key_checksum is string
+      - item.key_checksum is match('^sha256:[a-fA-F0-9]{64}\Z')
+    quiet: true
+    fail_msg: 'Present repositories require an HTTP(S) uri, suite, component list, HTTPS key_url and pinned sha256 key_checksum.'
+  loop: '{{ pkg_repo }}'
+  when: item.state | default('present') == 'present'
+
+- name: Reject duplicate repository URI and suite pairs
+  ansible.builtin.assert:
+    that:
+      - pkg_repo | selectattr('uri', 'defined') | selectattr('uri', 'equalto', item.uri) | selectattr('suite', 'defined') | selectattr('suite', 'equalto', item.suite) | list | length <= 1
+    quiet: true
+    fail_msg: 'Use only one name for a repository URI/suite pair; separate Signed-By files would conflict.'
+  loop: '{{ pkg_repo }}'
+  when: item.state | default('present') == 'present'
+
+- name: Manage requested APT repositories
+  ansible.builtin.include_tasks: apt.yml
+  when: pkg_repo | length > 0

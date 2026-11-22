@@ -1,0 +1,16 @@
+[Unit]
+Description=Krisxtoolset MongoDB 7 replica-set member
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mongodb
+Group=mongodb
+ExecStart=/usr/bin/mongod --config {{ mongodb_config_file }}
+LimitNOFILE=64000
+TimeoutStopSec=300
+Restart=no
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

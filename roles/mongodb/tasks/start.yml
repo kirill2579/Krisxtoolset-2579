@@ -1,0 +1,49 @@
+---
+- name: Refuse to overwrite an existing role configuration
+  ansible.builtin.stat:
+    path: '{{ mongodb_config_file }}'
+  register: mongodb_started
+
+- name: Require a not-yet-started instance
+  ansible.builtin.assert:
+    that: not mongodb_started.stat.exists
+    fail_msg: Start is for initial activation only. Use configure for an existing installation.
+
+- name: Inspect the role data directory before initial activation
+  ansible.builtin.find:
+    paths: '{{ mongodb_data_dir }}'
+    file_type: any
+    hidden: true
+  register: mongodb_initial_data
+
+- name: Refuse an initial activation over existing database files
+  ansible.builtin.assert:
+    that:
+      - mongodb_initial_data.matched == 0
+      - mongodb_initial_data.skipped_paths | length == 0
+
+- name: Verify existing service leaf certificate and key
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Validate configuration with the installed MongoDB parser before activation
+  ansible.builtin.template:
+    src: mongod.yml.j2
+    dest: '{{ mongodb_config_file }}'
+    owner: root
+    group: mongodb
+    mode: '0640'
+    validate: /usr/bin/mongod --config %s --outputConfig
+  no_log: true
+
+- name: Install the dedicated service
+  ansible.builtin.template:
+    src: mongodb-krisx.service.j2
+    dest: /etc/systemd/system/mongodb-krisx.service
+    mode: '0644'
+
+- name: Start with TLS and authentication enabled from the first connection
+  ansible.builtin.systemd_service:
+    name: mongodb-krisx
+    state: started
+    enabled: true
+    daemon_reload: true

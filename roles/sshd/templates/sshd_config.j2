@@ -1,0 +1,18 @@
+# Managed by Ansible. Authentication policy comes from inventory.
+{% macro sshd_setting(sshd_key, sshd_value) -%}
+{{ sshd_key }} {% if sshd_value is boolean %}{{ 'yes' if sshd_value else 'no' }}{% else %}{{ sshd_value }}{% endif %}
+{%- endmacro %}
+{% for sshd_key, sshd_value in sshd_config.items() %}
+{% for sshd_entry in (sshd_value if sshd_value is sequence and sshd_value is not string else [sshd_value]) %}
+{{ sshd_setting(sshd_key, sshd_entry) }}
+{% endfor %}
+{% endfor %}
+{% for sshd_block in sshd_match_blocks %}
+
+Match {{ sshd_block.condition }}
+{% for sshd_key, sshd_value in sshd_block.settings.items() %}
+{% for sshd_entry in (sshd_value if sshd_value is sequence and sshd_value is not string else [sshd_value]) %}
+    {{ sshd_setting(sshd_key, sshd_entry) }}
+{% endfor %}
+{% endfor %}
+{% endfor %}

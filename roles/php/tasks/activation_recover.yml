@@ -1,0 +1,59 @@
+---
+- name: Select the captured PHP transaction for recovery
+  ansible.builtin.set_fact:
+    _php_recovery_context: '{{ _php_activation }}'
+  no_log: true
+- name: Restore the previous PHP file and module set
+  ansible.builtin.include_tasks: recover.yml
+  when: _php_activation_safe
+- name: Reload restored PHP unit settings when activation was attempted
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: _php_activation_attempted and _php_activation.changed_dropins | length > 0
+  register: _php_recovery_daemon
+  ignore_errors: true
+- name: Validate restored FPM configurations before service recovery
+  ansible.builtin.command:
+    argv:
+    - '{{ item.binary }}'
+    - -t
+    - -y
+    - '{{ item.config_file }}'
+    - -c
+    - '{{ item.ini_file }}'
+    - -d
+    - display_startup_errors=1
+    - -d
+    - display_errors=stderr
+  loop: '{{ _php_activation.services }}'
+  when:
+  - _php_activation_attempted
+  - not _php_recovery_failed
+  - item.version in _php_activation.changed_versions
+  register: _php_restored_validation
+  changed_when: false
+  no_log: true
+  failed_when: not (_php_restored_validation | krisx.ops.php_clean_diagnostics)
+  ignore_errors: true
+- name: Restore previous PHP service running and enabled states where known
+  ansible.builtin.systemd_service:
+    name: '{{ item.service_name }}'
+    state: '{{ ''restarted'' if _php_old_service.state | default('''') == ''running''
+      else ''stopped'' }}'
+    enabled: '{{ (_php_old_service.status == ''enabled'') if _php_old_service.status
+      | default('''') in [''enabled'', ''disabled''] else omit }}'
+  vars:
+    _php_old_service: '{{ _php_activation.original_services[item.service_name ~ ".service"]
+      | default(_php_activation.original_services[item.service_name] | default({}))
+      }}'
+  loop: '{{ _php_activation.services }}'
+  when:
+  - _php_activation_attempted
+  - not _php_recovery_failed
+  - item.version in (_php_restored_validation.results | default([]) | selectattr('rc',
+    'defined') | selectattr('rc', 'equalto', 0) | rejectattr('failed', 'equalto',
+    true) | map(attribute='item.version') | list)
+  - item.version in _php_activation.changed_versions
+  - _php_old_service.state | default('') in ['running', 'stopped']
+  register: _php_restored_services
+  ignore_errors: true

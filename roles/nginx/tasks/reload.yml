@@ -1,0 +1,37 @@
+---
+- name: Reinspect the captured nginx configuration before handler validation
+  ansible.builtin.include_tasks: pid_config.yml
+  vars:
+    _nginx_pid_config_file: '{{ _nginx_reload_target.value.config_file }}'
+  when: _nginx_reload_target.value.pid_guard | default(false)
+
+- name: Require the captured nginx PID path to remain unchanged until reload
+  ansible.builtin.assert:
+    that:
+      - _nginx_pid_config_stat.stat.exists
+      - _nginx_observed_pid_file == _nginx_reload_target.value.pid_file
+    fail_msg: 'The nginx configuration disappeared or its PID path changed after apply. Reload is blocked; establish the running master configuration before recovery.'
+  when: _nginx_reload_target.value.pid_guard | default(false)
+
+- name: Check the captured nginx target PID before handler validation
+  ansible.builtin.include_tasks: pid_runtime.yml
+  vars:
+    _nginx_pid_guard_service: '{{ _nginx_reload_target.value.service_name }}'
+    _nginx_pid_guard_file: '{{ _nginx_reload_target.value.pid_file }}'
+    _nginx_pid_guard_config_exists: true
+    _nginx_pid_allow_absent_service: false
+  when: _nginx_reload_target.value.pid_guard | default(false)
+
+- name: Revalidate the exact nginx configuration before reload
+  ansible.builtin.command:
+    argv: ['{{ _nginx_reload_target.value.binary }}', -t, -c, '{{ _nginx_reload_target.value.config_file }}']
+  changed_when: false
+
+- name: Reload nginx without stopping it first
+  ansible.builtin.service:
+    name: '{{ _nginx_reload_target.value.service_name }}'
+    state: reloaded
+
+- name: Clear the successfully reloaded nginx target
+  ansible.builtin.set_fact:
+    _nginx_pending_reloads: "{{ _nginx_pending_reloads | dict2items | rejectattr('key', 'equalto', _nginx_reload_target.key) | items2dict }}"

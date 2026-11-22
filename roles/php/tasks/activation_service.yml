@@ -1,0 +1,13 @@
+---
+- name: Activate each changed PHP service without stopping it first
+  ansible.builtin.systemd_service:
+    name: '{{ _php_service_target.service_name }}'
+    state: "{{ 'restarted' if _php_service_target.dropin in _php_activation.changed_dropins else 'reloaded' }}"
+    enabled: '{{ _php_service_target.enabled }}'
+  when: not _php_activation_failed
+  register: _php_activation_service
+  ignore_errors: true
+
+- name: Record PHP service activation failure before the next version
+  ansible.builtin.set_fact:
+    _php_activation_failed: '{{ _php_activation_failed or (_php_activation_service.failed | default(false)) }}'

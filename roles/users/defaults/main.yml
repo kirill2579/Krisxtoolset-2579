@@ -1,0 +1,8 @@
+---
+users_groups: []
+users_list: []
+users_sudoers_d_dir: /etc/sudoers.d
+# Deployment scripts are copied only for explicitly selected deployment labels.
+users_deploy_users: []
+# Optional controller directory containing one script per deployment label.
+# users_deploy_files: files

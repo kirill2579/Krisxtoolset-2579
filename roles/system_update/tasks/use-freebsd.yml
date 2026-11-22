@@ -1,0 +1,7 @@
+---
+- name: Report deferred FreeBSD target support
+  ansible.builtin.fail:
+    msg: >-
+      FreeBSD target support in system_update is deferred. The former Python 2.7
+      bootstrap was not a system update implementation. A GhostBSD controller can
+      still manage supported Linux targets through tasks/main.yml.

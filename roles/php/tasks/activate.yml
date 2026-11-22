@@ -1,0 +1,82 @@
+---
+# Included Ansible handlers do not execute block rescue/always reliably.
+# Every fallible step is captured, then recovery and cleanup run explicitly.
+- name: Initialize the captured PHP activation state
+  ansible.builtin.set_fact:
+    _php_activation_attempted: false
+    _php_activation_safe: false
+    _php_activation_failed: false
+    _php_activation_keep_backup: false
+    _php_validation_failed: false
+    _php_module_activation_failed: false
+
+- name: Verify captured PHP paths and candidate bytes are still safe
+  ansible.builtin.include_tasks: activation_preflight.yml
+
+- name: Allow rollback only after the captured candidate is identified
+  ansible.builtin.set_fact:
+    _php_activation_safe: '{{ not _php_activation_preflight_failed }}'
+    _php_activation_failed: '{{ _php_activation_preflight_failed }}'
+
+- name: Revalidate the captured PHP transaction immediately before activation
+  ansible.builtin.include_tasks: validate.yml
+  vars:
+    _php_validation_cli: '{{ _php_activation.cli_checks }}'
+    _php_validation_services: '{{ _php_activation.services }}'
+    _php_validation_ignore_errors: true
+  when: _php_activation_safe
+
+- name: Record PHP validation failure before touching services
+  ansible.builtin.set_fact:
+    _php_activation_failed: '{{ _php_activation_failed or _php_validation_failed }}'
+
+- name: Mark that PHP service activation is starting
+  ansible.builtin.set_fact:
+    _php_activation_attempted: true
+  when: not _php_activation_failed
+
+- name: Reload systemd only when captured PHP drop-ins changed
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: not _php_activation_failed and _php_activation.changed_dropins | length > 0
+  register: _php_activation_daemon
+  ignore_errors: true
+
+- name: Record a PHP systemd reload failure
+  ansible.builtin.set_fact:
+    _php_activation_failed: '{{ _php_activation_failed or (_php_activation_daemon.failed | default(false)) }}'
+
+- name: Activate captured PHP services in order until a failure
+  ansible.builtin.include_tasks: activation_service.yml
+  loop: '{{ _php_activation.services }}'
+  loop_control:
+    loop_var: _php_service_target
+    label: '{{ _php_service_target.service_name }}'
+  when: _php_service_target.version in _php_activation.changed_versions
+
+- name: Recover the identified PHP transaction after activation failure
+  ansible.builtin.include_tasks: activation_recover.yml
+  when: _php_activation_failed and _php_activation_safe
+
+- name: Keep snapshots when PHP activation recovery was unsafe or incomplete
+  ansible.builtin.set_fact:
+    _php_activation_keep_backup: "{{ _php_activation_failed and (not _php_activation_safe or (_php_recovery_failed | default(false)) or (_php_recovery_daemon.failed | default(false)) or (_php_restored_validation.failed | default(false)) or (_php_restored_services.failed | default(false))) }}"
+
+- name: Clear this PHP transaction from the handler queue
+  ansible.builtin.set_fact:
+    _php_pending_transactions: "{{ _php_pending_transactions | rejectattr('backup', 'equalto', _php_activation.backup) | list }}"
+  no_log: true
+
+- name: Remove successfully recovered or activated PHP snapshots
+  ansible.builtin.file:
+    path: '{{ _php_activation.backup }}'
+    state: absent
+  when: not _php_activation_keep_backup
+  changed_when: false
+  register: _php_activation_cleanup
+  ignore_errors: true
+
+- name: Report PHP activation or cleanup failure after attempting recovery
+  ansible.builtin.fail:
+    msg: "{{ 'PHP service activation failed.' if _php_activation_failed else 'PHP activated, but snapshot cleanup failed.' }} {{ ('Recovery snapshots remain at ' ~ _php_activation.backup ~ '; inspect the failure before manual recovery.') if (_php_activation_keep_backup or (_php_activation_cleanup.failed | default(false))) else 'Previous managed files and module states were restored; previously running services were recovered where their original state was known.' }} If captured paths or contents changed unexpectedly, recovery is deliberately withheld. Running-state rollback is best-effort, not atomic across services."
+  when: _php_activation_failed or (_php_activation_cleanup.failed | default(false))

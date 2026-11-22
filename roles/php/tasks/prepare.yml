@@ -1,0 +1,184 @@
+---
+- name: Require a supported PHP target platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system | default('') == 'Linux'
+      - ansible_facts.os_family | default('') == 'Debian'
+      - not php_manage_repository or ansible_facts.distribution | default('') == 'Ubuntu'
+    fail_msg: 'PHP requires APT-based Linux with gathered facts. The default PPA requires Ubuntu; disable php_manage_repository when supplying packages through another supported repository.'
+
+- name: Reject retired public PHP version selectors
+  ansible.builtin.assert:
+    that:
+      - php_version is not defined
+      - php_default_cli_version is not defined
+    fail_msg: 'Use php_versions and explicit php_cli_default. php_version is only a scoped template compatibility variable.'
+
+- name: Validate PHP versions and pool inputs on the controller
+  ansible.builtin.set_fact:
+    _php_pool_plan: '{{ php_versions | krisx.ops.php_pool_plan(php_fpm_conf) }}'
+    _php_managed_files: []
+    _php_services: []
+    _php_cli_checks: []
+    _php_packages: []
+    _php_directories: []
+    _php_log_paths: []
+    _php_log_directories: []
+  no_log: true
+
+- name: Validate PHP management and template settings
+  ansible.builtin.assert:
+    that:
+      - php_manage_cli is boolean
+      - php_manage_service is boolean
+      - php_fpm_service_enabled is boolean
+      - php_manage_repository is boolean
+      - php_repository is string and php_repository | length > 0
+      - php_repository_dependencies is sequence and php_repository_dependencies is not string and php_repository_dependencies is not mapping
+      - php_ini_config is mapping and php_ini_overrides is mapping
+      - php_template_ini is string and php_template_ini | length > 0
+      - php_template_fpm is string and php_template_fpm | length > 0
+      - php_template_fpm_main is string and php_template_fpm_main | length > 0
+      - php_fpm_runtime_dir is string and php_fpm_runtime_dir is match('^[A-Za-z0-9_-]+$')
+      - php_fpm_runtime_dir_mode is string and php_fpm_runtime_dir_mode is match('^0[0-7]{3}$')
+      - php_fpm_log_group is string and php_fpm_log_group is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+    fail_msg: 'PHP management flags, INI mappings, templates, log reader group and runtime-directory settings must have their documented types.'
+
+- name: Validate the PHP repository URI before host changes
+  ansible.builtin.assert:
+    that:
+      - php_repository_uri is string
+      - php_repository_uri == 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu' or php_repository_uri is match('^mirror[+]file:/[A-Za-z0-9_./-]+[.]list\\Z')
+      - php_repository == 'ppa:ondrej/php' or php_repository_uri == 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu'
+      - php_repository != 'ppa:ondrej/php' or ansible_facts.distribution_release | default('') is match('^[a-z0-9][a-z0-9-]*\\Z')
+    fail_msg: 'php_repository_uri supports only the standard ondrej/php PPA: use its official HTTPS URI or an absolute mirror+file URI ending in .list, without whitespace or credentials.'
+  when: php_manage_repository
+
+- name: Require an explicit valid default CLI version
+  ansible.builtin.assert:
+    that:
+      - php_cli_default is defined
+      - php_cli_default is string
+      - php_cli_default in php_versions
+    fail_msg: 'Set php_cli_default to a quoted member of php_versions, or set php_manage_cli=false.'
+  when: php_manage_cli
+
+- name: Validate bundled pool settings
+  ansible.builtin.assert:
+    that:
+      - php_fpm_session_redis_path is string and php_fpm_session_redis_path | length > 0
+      - php_fpm_session_redis_path is match('^[^"\r\n]+$')
+      - php_fpm_pm_content_10 is string
+      - php_fpm_user is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - php_fpm_group is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - php_fpm_listen_owner is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - php_fpm_listen_group is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - php_fpm_listen_mode is string and php_fpm_listen_mode is match('^0[0-7]{3}$')
+      - log.target | default('file') in ['file', 'syslog', 'off']
+    fail_msg: 'Bundled pools require php_fpm_session_redis_path and valid pool identities. Logging target must be file, syslog, or off.'
+  when:
+    - php_fpm_conf | length > 0
+    - php_template_fpm in ['pool.conf.j2', role_path ~ '/templates/pool.conf.j2']
+
+- name: Validate explicit PHP module settings before any host mutation
+  ansible.builtin.import_tasks: prepare_modules.yml
+
+- name: Validate common PHP paths
+  ansible.builtin.assert:
+    that:
+      - item | krisx.ops.php_safe_path == item
+  loop: '{{ [php_ini_dir, php_fpm_config_dir, php_fpm_socket_dir, php_fpm_log_dir, php_systemd_dir] + ([php_cli_binary, php_cli_link, php_alternatives_binary] if php_manage_cli else []) }}'
+
+- name: Merge PHP INI configuration without changing defaults
+  ansible.builtin.set_fact:
+    php_ini_merged: '{{ php_ini_config | combine(php_ini_overrides, recursive=True) }}'
+  no_log: true
+
+- name: Render each version with a scoped compatibility variable
+  ansible.builtin.include_tasks:
+    file: prepare_version.yml
+    apply:
+      tags: [php, install, php_install, configure, php_config]
+  loop: '{{ php_versions }}'
+  loop_control:
+    loop_var: _php_version
+  vars:
+    php_version: '{{ _php_version }}'
+    _php_version_pools: "{{ php_fpm_conf | selectattr('php_version', 'equalto', _php_version) | list }}"
+
+- name: Prepare the dedicated custom PHP log rotation policy
+  ansible.builtin.import_tasks: prepare_logrotate.yml
+
+- name: Require distinct service targets across PHP versions
+  ansible.builtin.assert:
+    that:
+      - _php_services | map(attribute='service_name') | unique | length == _php_services | length
+      - _php_services | map(attribute='config_file') | unique | length == _php_services | length
+    fail_msg: 'Every managed PHP version must use its own FPM service and main configuration file.'
+
+- name: Collect PHP log parent directories without taking ownership of existing paths
+  ansible.builtin.set_fact:
+    _php_log_directories: '{{ _php_log_paths | map(attribute="dest") | map("dirname") | unique | list }}'
+
+- name: Collect managed PHP directories
+  ansible.builtin.set_fact:
+    _php_directories: "{{ ((_php_managed_files | map(attribute='dest') | map('dirname') | list) + ([php_fpm_socket_dir] if php_fpm_conf | length > 0 else []) + _php_log_directories) | unique | list }}"
+
+- name: Validate the complete PHP destination graph
+  ansible.builtin.assert:
+    that:
+      - (_php_managed_files + _php_log_paths) | krisx.ops.php_assert_destinations(_php_directories)
+      - (_php_managed_files | map(attribute='dest') | map('krisx.ops.php_path_identity') | list | intersect(_php_pending_transactions | default([]) | map(attribute='files') | flatten | map(attribute='item.dest') | map('krisx.ops.php_path_identity') | list)) | length == 0
+    fail_msg: 'PHP configuration destinations overlap a pending invocation. Flush handlers between overlapping uses of this role.'
+
+# Check ancestors as well as leaf paths. /var/run is the only supported alias,
+# and is accepted only after verifying the host actually links it to /run.
+- name: Inspect PHP directory paths without following symlinks
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: '{{ _php_directories | krisx.ops.php_path_ancestors }}'
+  register: _php_path_stats
+
+- name: Refuse unexpected symlinks and non-directory PHP ancestors
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false))) or (item.item == '/var/run' and item.stat.islnk | default(false) and item.stat.lnk_source | default('') == '/run')
+    fail_msg: 'Managed PHP paths must have regular directory ancestors. Only a verified /var/run -> /run alias is supported.'
+  loop: '{{ _php_path_stats.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Inspect all managed PHP files without following symlinks
+  ansible.builtin.stat:
+    path: '{{ item.dest }}'
+    follow: false
+  loop: '{{ _php_managed_files }}'
+  register: _php_preflight_files
+  no_log: true
+
+- name: Refuse symlinks or non-regular files at PHP destinations
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'Managed PHP filenames must be regular files or absent.'
+  loop: '{{ _php_preflight_files.results }}'
+  no_log: true
+
+- name: Inspect bundled PHP log destinations before host mutation
+  ansible.builtin.stat:
+    path: '{{ item.dest }}'
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop: '{{ _php_log_paths }}'
+  register: _php_preflight_logs
+
+- name: Reject symlinks and special files at PHP log destinations
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'Bundled PHP log destinations must be regular files or absent.'
+  loop: '{{ _php_preflight_logs.results }}'
+  loop_control:
+    label: '{{ item.item.dest }}'

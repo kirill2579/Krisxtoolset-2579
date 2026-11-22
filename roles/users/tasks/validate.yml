@@ -1,0 +1,104 @@
+---
+- name: Require an explicit controller source for optional deployment files
+  ansible.builtin.assert:
+    that:
+      - users_deploy_files is defined
+      - users_deploy_files is string
+      - users_deploy_files | trim | length > 0
+    fail_msg: Set users_deploy_files to a controller directory when users_deploy_users is not empty.
+  when: users_deploy_users | length > 0
+
+- name: Reject legacy users variable names before changes
+  ansible.builtin.assert:
+    that:
+      - groups_list is not defined
+      - sudoers_d_dir is not defined
+      - deploy_users is not defined
+      - deploy_files is not defined
+    fail_msg: "Legacy users inputs are no longer supported; rename them to the documented users_ variables."
+
+- name: Validate platform and top-level inputs before changes
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system | default('') == 'Linux'
+      - ansible_facts.os_family | default('') in ['Debian', 'RedHat']
+      - users_list is sequence and users_list is not string and users_list is not mapping
+      - users_groups is sequence and users_groups is not string and users_groups is not mapping
+      - users_deploy_users is sequence and users_deploy_users is not string and users_deploy_users is not mapping
+      - users_sudoers_d_dir is string and users_sudoers_d_dir is match('^/[^\r\n]+\Z')
+    fail_msg: "The users role requires Linux facts and lists for users_list, users_groups and users_deploy_users."
+
+- name: Validate account records without exposing hashes
+  ansible.builtin.assert:
+    that:
+      - users_item is mapping
+      - users_item.name is defined and users_item.name is string
+      - users_item.name is match('^[a-zA-Z_][a-zA-Z0-9_-]*[$]?\Z')
+      - users_item.state | default('present') in ['present', 'absent']
+      - users_item.uid is not defined or (users_item.uid is integer and users_item.uid >= 0)
+      - users_item.groups is not defined or (users_item.groups is sequence and users_item.groups is not string and users_item.groups is not mapping)
+      - users_item.home is not defined or (users_item.home is string and users_item.home is match('^/[^\r\n]+\Z'))
+      - users_item.shell is not defined or (users_item.shell is string and users_item.shell is match('^/[^\r\n]+\Z'))
+      - users_item.password is not defined or (users_item.password is string and (users_item.password is match('^!') or users_item.password == '*' or users_item.password is match('^\$[a-zA-Z0-9]+\$[^\s]+\Z')))
+      - users_item.password is not defined or ('\n' not in users_item.password and '\r' not in users_item.password)
+      - users_item.update_password | default('always') in ['always', 'on_create']
+      - users_item.ssh_state | default('present') in ['present', 'absent']
+      - users_item.ssh_key is not defined or (users_item.ssh_key is string and users_item.ssh_key | trim | length > 0)
+      - users_item.groups is not defined or users_item.groups | select('string') | list | length == users_item.groups | length
+      - users_item.groups is not defined or users_item.groups | reject('match', '^[a-zA-Z_][a-zA-Z0-9_-]*[$]?\Z') | list | length == 0
+      - users_item.primary_group is not defined or (users_item.primary_group is string and users_item.primary_group is match('^[a-zA-Z_][a-zA-Z0-9_-]*[$]?\Z'))
+      - users_item.principal is not defined or users_item.principal is boolean
+      - users_item.remove is not defined or users_item.remove is boolean
+      - users_item.system is not defined or users_item.system is boolean
+      - users_item.name != 'root' or (users_item.state | default('present') == 'present' and not users_item.remove | default(false))
+    fail_msg: "Invalid user record: check names, types, state, absolute paths and crypt password hashes."
+  loop: "{{ users_list }}"
+  no_log: true
+  loop_control:
+    loop_var: users_item
+
+- name: Validate group records
+  ansible.builtin.assert:
+    that:
+      - users_item is mapping
+      - users_item.name is defined and users_item.name is string
+      - users_item.name is match('^[a-zA-Z_][a-zA-Z0-9_-]*[$]?\Z')
+      - users_item.state | default('present') in ['present', 'absent']
+      - users_item.name != 'root' or users_item.state | default('present') == 'present'
+      - users_item.runas is not defined or (users_item.runas is string and users_item.runas | trim | length > 0 and '\n' not in users_item.runas and '\r' not in users_item.runas)
+      - users_item.gid is not defined or (users_item.gid is integer and users_item.gid >= 0)
+      - users_item.system is not defined or users_item.system is boolean
+      - users_item.sudo_nopasswd is not defined or (users_item.sudo_nopasswd is sequence and users_item.sudo_nopasswd is not string and users_item.sudo_nopasswd is not mapping)
+      - users_item.sudo_withpass is not defined or (users_item.sudo_withpass is sequence and users_item.sudo_withpass is not string and users_item.sudo_withpass is not mapping)
+    fail_msg: "Invalid group record or sudo command list."
+  loop: "{{ users_groups }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name | default('invalid group') }}"
+
+- name: Validate sudo command values
+  ansible.builtin.assert:
+    that:
+      - users_item is string and users_item | trim | length > 0 and '\n' not in users_item and '\r' not in users_item
+    fail_msg: "Sudo commands must be nonempty, single-line strings."
+  loop: "{{ (users_groups | selectattr('sudo_nopasswd', 'defined') | map(attribute='sudo_nopasswd') | list | flatten(levels=1, skip_nulls=false)) + (users_groups | selectattr('sudo_withpass', 'defined') | map(attribute='sudo_withpass') | list | flatten(levels=1, skip_nulls=false)) }}"
+  loop_control:
+    loop_var: users_item
+
+- name: Reject duplicate account and group records
+  ansible.builtin.assert:
+    that:
+      - users_list | map(attribute='name') | list | unique | length == users_list | length
+      - users_groups | map(attribute='name') | list | unique | length == users_groups | length
+      - (users_groups | map(attribute='name') | list) | intersect(users_groups | map(attribute='name') | map('regex_replace', '$', '-withpass') | list) | length == 0
+
+- name: Validate deployment labels and groups
+  ansible.builtin.assert:
+    that:
+      - users_item is string and users_item is match('^[a-zA-Z_][a-zA-Z0-9_-]*[$]?\Z')
+      - users_item not in (users_groups | selectattr('state', 'defined') | selectattr('state', 'equalto', 'absent') | map(attribute='name') | list)
+    fail_msg: "Deployment labels must be valid, non-absent group names."
+  loop: "{{ users_deploy_users }}"
+  loop_control:
+    loop_var: users_item
+

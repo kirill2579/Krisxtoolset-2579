@@ -1,0 +1,26 @@
+---
+- name: Validate version and SAPI scoped PHP module settings
+  ansible.builtin.set_fact:
+    _php_module_plan: '{{ php_versions | krisx.ops.php_module_plan(php_enmodes, php_dismodes) }}'
+    _php_module_recovery: {}
+    _php_module_changed_versions: []
+    _php_module_restore_failed: false
+    _php_module_check_unverified: false
+
+- name: Capture only explicitly requested PHP module targets
+  ansible.builtin.set_fact:
+    _php_module_paths: '{{ _php_module_plan | krisx.ops.php_module_paths }}'
+    _php_module_fpm_versions: "{{ _php_module_plan | selectattr('sapi', 'equalto', 'fpm') | map(attribute='version') | unique | list }}"
+
+- name: Require the distribution configuration root for PHP module helpers
+  ansible.builtin.assert:
+    that:
+      - php_ini_dir == '/etc/php'
+    fail_msg: 'phpenmod/phpdismod manage /etc/php only. Use php_ini_dir=/etc/php when requesting module switches; custom configuration roots remain supported when both module maps are empty.'
+  when: _php_module_plan | length > 0
+
+- name: Reject overlapping PHP module changes before pending activation
+  ansible.builtin.assert:
+    that:
+      - _php_module_plan | krisx.ops.php_module_no_pending_overlap(_php_pending_transactions | default([]))
+    fail_msg: 'PHP module targets overlap a pending invocation. Flush handlers between overlapping uses of this role.'

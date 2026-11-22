@@ -1,0 +1,28 @@
+---
+- name: Inspect privileged paths without following symbolic links
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop:
+    - /etc
+    - /etc/systemd
+    - /etc/systemd/system
+    - /etc/mongodb-krisx
+    - /etc/mongodb-krisx/admin.js
+    - /etc/mongodb-krisx/validate-tls.py
+    - /etc/mongodb-krisx/applied.sha256
+    - '{{ mongodb_config_file }}'
+    - '{{ mongodb_config_file }}.candidate'
+    - /etc/systemd/system/mongodb-krisx.service
+  register: mongodb_paths
+
+- name: Refuse privileged code or configuration paths writable by the service
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false))
+      - not item.stat.exists or item.stat.uid == 0
+      - not item.stat.exists or not item.stat.wgrp
+      - not item.stat.exists or not item.stat.woth
+  loop: '{{ mongodb_paths.results }}'
+  loop_control:
+    label: '{{ item.item }}'

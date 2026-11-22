@@ -1,0 +1,133 @@
+---
+- name: Initialize PHP transaction state
+  ansible.builtin.set_fact:
+    _php_live_attempted: false
+    _php_keep_backup: false
+    _php_queued: false
+    _php_changed_versions: []
+    _php_changed_dropins: []
+
+- name: Capture original FPM service state
+  ansible.builtin.service_facts:
+  register: _php_original_service_facts
+  when: php_manage_service and _php_services | length > 0
+
+- name: Create a private PHP recovery directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ansible-php-
+  register: _php_backup
+  changed_when: false
+
+- name: Apply PHP configuration with recovery across all versions
+  block:
+    - name: Snapshot all existing managed PHP files
+      ansible.builtin.copy:
+        src: '{{ item.item.dest }}'
+        remote_src: true
+        dest: '{{ _php_backup.path }}/{{ _php_index }}'
+        mode: '0600'
+        follow: false
+      loop: '{{ _php_original_files.results }}'
+      loop_control:
+        index_var: _php_index
+        label: '{{ item.item.dest }}'
+      when: item.stat.exists
+      changed_when: false
+      no_log: true
+
+    - name: Mark the beginning of PHP live changes
+      ansible.builtin.set_fact:
+        _php_live_attempted: true
+
+    - name: Apply explicit PHP module changes with captured recovery state
+      ansible.builtin.import_tasks: php_modules.yml
+
+    - name: Ensure PHP configuration and socket directories exist
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else 'root' }}"
+        group: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else 'root' }}"
+        mode: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else (php_fpm_runtime_dir_mode if item == php_fpm_socket_dir else '0755') }}"
+      loop: '{{ _php_directories }}'
+
+    # Prepare every log before FPM validation can create root-only files.
+    # Never make a shared nginx log directory writable by FPM workers.
+    - name: Prepare PHP logs without truncating their contents
+      ansible.builtin.file:
+        path: '{{ item.dest }}'
+        state: touch
+        owner: "{{ php_fpm_user if item.worker else 'root' }}"
+        group: '{{ php_fpm_log_group }}'
+        mode: '0640'
+        access_time: preserve
+        modification_time: preserve
+        follow: false
+      loop: '{{ _php_log_paths }}'
+
+    - name: Install the complete pre-rendered PHP configuration
+      ansible.builtin.copy:
+        content: '{{ item.content }}'
+        dest: '{{ item.dest }}'
+        owner: root
+        group: root
+        mode: "{{ '0600' if item.kind == 'fpm' else '0644' }}"
+        follow: false
+        validate: "{{ (php_fpm_logrotate_binary ~ ' --debug --state /dev/null %s') if item.kind == 'logrotate' and _php_logrotate_required else omit }}"
+      loop: '{{ _php_managed_files }}'
+      register: _php_installed_files
+      no_log: true
+
+    - name: Validate every configured PHP INI and FPM pool before activation
+      ansible.builtin.include_tasks: validate.yml
+      vars:
+        _php_validation_cli: '{{ _php_cli_checks }}'
+        _php_validation_services: '{{ _php_services }}'
+
+    - name: Capture changed FPM versions and systemd drop-ins
+      ansible.builtin.set_fact:
+        _php_changed_versions: "{{ ((_php_installed_files.results | selectattr('changed') | rejectattr('item.kind', 'equalto', 'cli') | rejectattr('item.kind', 'equalto', 'logrotate') | map(attribute='item.version') | list) + (_php_module_changed_versions | default([]))) | unique | list }}"
+        _php_changed_dropins: "{{ _php_installed_files.results | selectattr('changed') | selectattr('item.kind', 'equalto', 'systemd') | map(attribute='item.dest') | list }}"
+
+    # All handler inputs are concrete values, including backups and service
+    # contexts, so no late php_version loop variable can choose the wrong unit.
+    - name: Capture the complete PHP activation and recovery context
+      ansible.builtin.set_fact:
+        _php_pending_transactions: "{{ (_php_pending_transactions | default([])) + [{'backup': _php_backup.path, 'files': _php_original_files.results, 'directories': _php_original_directories, 'logs': _php_original_logs.results, 'services': _php_services, 'cli_checks': _php_cli_checks, 'changed_versions': _php_changed_versions, 'changed_dropins': _php_changed_dropins, 'original_services': _php_original_service_facts.ansible_facts.services | default({}), 'module_recovery': _php_module_recovery | default({}), 'module_changed_versions': _php_module_changed_versions | default([])}] }}"
+        _php_queued: true
+      when: php_manage_service and _php_changed_versions | length > 0
+      changed_when: true
+      notify: PHP configuration installed
+      no_log: true
+
+  rescue:
+    - name: Prepare the current PHP transaction for recovery
+      ansible.builtin.set_fact:
+        _php_recovery_context:
+          backup: '{{ _php_backup.path }}'
+          files: '{{ _php_original_files.results }}'
+          directories: '{{ _php_original_directories }}'
+          logs: '{{ _php_original_logs.results }}'
+          module_recovery: '{{ _php_module_recovery | default({}) }}'
+      no_log: true
+
+    - name: Recover files and modules after PHP apply failure
+      ansible.builtin.include_tasks: recover.yml
+      when: _php_live_attempted
+
+    - name: Keep recovery material if PHP recovery was incomplete
+      ansible.builtin.set_fact:
+        _php_keep_backup: '{{ _php_recovery_failed | default(false) }}'
+
+    - name: Report the failed PHP configuration transaction
+      ansible.builtin.fail:
+        msg: "PHP configuration failed before service activation. {{ ('Recovery is incomplete; snapshots remain at ' ~ _php_backup.path ~ '.') if _php_keep_backup else 'Previous managed files and module states were restored; no service reload was requested. Newly created directories remain.' }} Package installation and CLI alternatives are outside this file transaction."
+
+  always:
+    - name: Remove unneeded PHP recovery snapshots
+      ansible.builtin.file:
+        path: '{{ _php_backup.path }}'
+        state: absent
+      when: not _php_keep_backup and not _php_queued
+      changed_when: false

@@ -1,0 +1,39 @@
+---
+- name: Prepare a demonstration web host
+  hosts: example_web
+  gather_facts: true
+  become: true
+  vars:
+    pkg_install:
+      - name: ca-certificates
+        state: present
+      - name: redis-server
+        state: present
+      - name: php8.3-redis
+        state: present
+    php_versions: ['8.3']
+    php_cli_default: '8.3'
+    php_manage_repository: false
+    php_fpm_session_redis_path: tcp://127.0.0.1:6379
+    php_enmodes:
+      fpm: [redis]
+    php_fpm_conf:
+      - fpm_socket_name: example
+        php_version: '8.3'
+        post_max_size: 2M
+        upload_max_filesize: 1M
+    log:
+      target: file
+    nginx_vhost_file: example.test
+    nginx_conf:
+      - server_name: [example.test]
+        listen: '80'
+        locations:
+          - location: /
+            content: |
+              default_type text/plain;
+              return 200 "example\n";
+  roles:
+    - role: krisx.ops.pkg_install
+    - role: krisx.ops.php
+    - role: krisx.ops.nginx

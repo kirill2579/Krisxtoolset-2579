@@ -1,0 +1,58 @@
+---
+- name: Predict explicit PHP module changes
+  ansible.builtin.import_tasks: php_modules.yml
+
+- name: Predict PHP directory creation and permissions
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else 'root' }}"
+    group: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else 'root' }}"
+    mode: "{{ omit if item in _php_log_directories and item in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list) else (php_fpm_runtime_dir_mode if item == php_fpm_socket_dir else '0755') }}"
+  loop: '{{ _php_directories }}'
+
+- name: Predict PHP files whose parent directory exists
+  ansible.builtin.copy:
+    content: '{{ item.content }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: "{{ '0600' if item.kind == 'fpm' else '0644' }}"
+    follow: false
+  loop: '{{ _php_managed_files }}'
+  when: item.dest | dirname in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list)
+  no_log: true
+
+- name: Report PHP files requiring new directories
+  ansible.builtin.debug:
+    msg: 'Would create {{ item.dest }} after creating its parent directory.'
+  loop: '{{ _php_managed_files }}'
+  loop_control:
+    label: '{{ item.dest }}'
+  when: item.dest | dirname not in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list)
+  changed_when: true
+  no_log: true
+
+- name: Predict nontruncating PHP log preparation in existing directories
+  ansible.builtin.file:
+    path: '{{ item.dest }}'
+    state: touch
+    owner: "{{ php_fpm_user if item.worker else 'root' }}"
+    group: '{{ php_fpm_log_group }}'
+    mode: '0640'
+    access_time: preserve
+    modification_time: preserve
+    follow: false
+  loop: '{{ _php_log_paths }}'
+  when: item.dest | dirname in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list)
+
+- name: Report PHP logs requiring new directories
+  ansible.builtin.debug:
+    msg: 'Would create the PHP log {{ item.dest }} after creating its parent directory.'
+  loop: '{{ _php_log_paths }}'
+  when: item.dest | dirname not in (_php_original_directories | selectattr('stat.exists') | map(attribute='item') | list)
+  changed_when: true
+
+- name: Explain PHP check mode validation limits
+  ansible.builtin.debug:
+    msg: 'Check mode validates inputs, renders templates and predicts package, CLI, module and file changes. It does not write candidate files, run FPM candidate validation, or activate services; missing packages and runtime dependencies cannot be proven here.'

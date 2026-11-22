@@ -1,0 +1,104 @@
+---
+- name: Check for a previous MongoDB installation
+  ansible.builtin.stat:
+    path: '{{ item }}'
+  loop:
+    - /usr/bin/mongod
+    - '{{ mongodb_data_dir }}'
+    - /etc/mongodb-krisx
+    - /etc/systemd/system/mongodb-krisx.service
+  register: mongodb_existing
+
+- name: Require a fresh host for installation
+  ansible.builtin.assert:
+    that: mongodb_existing.results | selectattr('stat.exists') | list | length == 0
+    fail_msg: Install is fresh-host only. Existing data and installations are never adopted or overwritten; use configure/status.
+
+- name: Install repository transport prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, gnupg]
+    state: present
+    update_cache: true
+
+- name: Fetch the official scoped MongoDB signing key
+  ansible.builtin.get_url:
+    url: https://pgp.mongodb.com/server-7.0.asc
+    dest: /usr/share/keyrings/mongodb-server-7.0.asc
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Inspect the official signing key before trusting it
+  ansible.builtin.command:
+    argv: [gpg, --batch, --show-keys, --with-colons, /usr/share/keyrings/mongodb-server-7.0.asc]
+  register: mongodb_signing_key
+  changed_when: false
+
+- name: Require the MongoDB 7.0 release-signing fingerprint
+  ansible.builtin.assert:
+    that: "'fpr:::::::::E58830201F7DD82CD808AA84160D26BB1785BA38:' in mongodb_signing_key.stdout"
+
+- name: Configure only the supported MongoDB 7.0 Jammy repository
+  ansible.builtin.apt_repository:
+    repo: deb [arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-7.0.asc] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse
+    filename: mongodb-org-7.0
+    state: present
+    update_cache: false
+
+- name: Prevent accidental major upgrades even if another repository appears
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/mongodb-7.0
+    mode: '0644'
+    content: |
+      Package: mongodb-org mongodb-org-*
+      Pin: version 7.0.*
+      Pin-Priority: 990
+
+      Package: mongodb-org mongodb-org-*
+      Pin: version *
+      Pin-Priority: -1
+
+- name: Prevent the vendor unit from starting with a stock unsecured configuration
+  ansible.builtin.file:
+    path: /etc/systemd/system/mongod.service
+    src: /dev/null
+    state: link
+    force: false
+
+- name: Install the current 7.0 patch from official packages without starting services
+  ansible.builtin.apt:
+    name: [mongodb-org-server, mongodb-mongosh]
+    state: present
+    update_cache: true
+    policy_rc_d: 101
+
+- name: Create private role-owned directories
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: mongodb
+    group: mongodb
+    mode: '0700'
+  loop:
+    - '{{ mongodb_data_dir }}'
+    - /var/log/mongodb-krisx
+
+- name: Keep privileged scripts in a root-owned directory
+  ansible.builtin.file:
+    path: /etc/mongodb-krisx
+    state: directory
+    owner: root
+    group: mongodb
+    mode: '0750'
+
+- name: Install the shared Vault keyfile once
+  ansible.builtin.copy:
+    content: '{{ mongodb_shared_keyfile }}'
+    dest: /etc/mongodb-krisx/keyfile
+    owner: mongodb
+    group: mongodb
+    mode: '0400'
+    force: false
+  diff: false
+  no_log: true
+

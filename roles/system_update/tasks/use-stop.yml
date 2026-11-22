@@ -1,0 +1,4 @@
+---
+- name: Report unsupported target operating system
+  ansible.builtin.fail:
+    msg: system_update supports Debian/Ubuntu and RedHat-family targets with DNF only.

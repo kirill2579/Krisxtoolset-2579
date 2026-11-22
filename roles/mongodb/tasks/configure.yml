@@ -1,0 +1,103 @@
+---
+- name: Require the exact healthy three-member set before changing a file
+  ansible.builtin.include_tasks: status.yml
+
+- name: Read the existing keyfile digest without exposing it
+  ansible.builtin.stat:
+    path: /etc/mongodb-krisx/keyfile
+    checksum_algorithm: sha256
+  register: mongodb_key_stat
+  no_log: true
+
+- name: Reject implicit key rotation
+  ansible.builtin.assert:
+    that: mongodb_key_stat.stat.checksum == (mongodb_shared_keyfile | hash('sha256'))
+  no_log: true
+
+- name: Verify existing service leaf certificate and key
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Validate a candidate configuration without touching the active file
+  ansible.builtin.template:
+    src: mongod.yml.j2
+    dest: '{{ mongodb_config_file }}.candidate'
+    owner: root
+    group: mongodb
+    mode: '0640'
+    validate: /usr/bin/mongod --config %s --outputConfig
+  no_log: true
+
+- name: Read the candidate digest
+  ansible.builtin.stat:
+    path: '{{ mongodb_config_file }}.candidate'
+    checksum_algorithm: sha256
+  register: mongodb_candidate
+
+- name: Read the active configuration and TLS material digests
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    checksum_algorithm: sha256
+  loop:
+    - '{{ mongodb_config_file }}'
+    - '{{ mongodb_tls_certificate_key_file }}'
+    - '{{ mongodb_tls_ca_file }}'
+    - /usr/bin/mongod
+  register: mongodb_live_files
+  no_log: true
+
+- name: Build an activation identity including TLS renewal and package updates
+  ansible.builtin.set_fact:
+    mongodb_activation: '{{ mongodb_candidate.stat.checksum }}:{{ mongodb_live_files.results[1].stat.checksum }}:{{ mongodb_live_files.results[2].stat.checksum }}:{{ mongodb_live_files.results[3].stat.checksum }}'
+  no_log: true
+
+- name: Read the last successfully activated configuration and TLS identity
+  ansible.builtin.command: cat /etc/mongodb-krisx/applied.sha256
+  register: mongodb_applied
+  changed_when: false
+  failed_when: mongodb_applied.rc not in [0, 1]
+
+- name: Track drift, renewed TLS material and interrupted previous activation
+  ansible.builtin.set_fact:
+    mongodb_restart_needed: '{{ mongodb_activation != mongodb_applied.stdout | trim or mongodb_candidate.stat.checksum != mongodb_live_files.results[0].stat.checksum | default("") }}'
+
+- name: Recheck quorum and step down this member if it is primary
+  ansible.builtin.include_tasks: client.yml
+  vars:
+    mongodb_client_action: prepare_restart
+  when: mongodb_restart_needed
+
+- name: Atomically activate the validated configuration
+  ansible.builtin.copy:
+    src: '{{ mongodb_config_file }}.candidate'
+    dest: '{{ mongodb_config_file }}'
+    remote_src: true
+    owner: root
+    group: mongodb
+    mode: '0640'
+  when: mongodb_restart_needed
+
+- name: Restart only this member after checking all three healthy members
+  ansible.builtin.systemd_service:
+    name: mongodb-krisx
+    state: restarted
+  when: mongodb_restart_needed
+
+- name: Wait for the local TLS listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: '{{ mongodb_port }}'
+    timeout: 120
+  when: mongodb_restart_needed
+
+- name: Require full recovery before allowing the next serial host
+  ansible.builtin.include_tasks: client.yml
+  vars:
+    mongodb_client_action: wait_healthy
+
+- name: Record successful activation only after full replica-set recovery
+  ansible.builtin.copy:
+    content: '{{ mongodb_activation }}'
+    dest: /etc/mongodb-krisx/applied.sha256
+    owner: root
+    group: root
+    mode: '0600'

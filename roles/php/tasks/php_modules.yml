@@ -1,0 +1,199 @@
+---
+# Debian's helpers can return success while warning that nothing was changed.
+# Capture and validate every requested target before the first helper invocation.
+- name: Inspect explicitly requested PHP module sources
+  ansible.builtin.stat:
+    path: '{{ item.source }}'
+    follow: true
+  loop: '{{ _php_module_paths }}'
+  register: _php_module_source_stats
+  no_log: true
+
+- name: Inspect requested PHP SAPI configuration directories
+  ansible.builtin.stat:
+    path: '{{ item.conf_dir }}'
+    follow: false
+  loop: '{{ _php_module_paths }}'
+  register: _php_module_conf_stats
+  no_log: true
+
+- name: Determine whether installed PHP modules can be checked
+  ansible.builtin.set_fact:
+    _php_modules_ready: "{{ (_php_module_source_stats.results | selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') | list | length == _php_module_paths | length) and (_php_module_conf_stats.results | selectattr('stat.isdir', 'defined') | selectattr('stat.isdir') | list | length == _php_module_paths | length) }}"
+
+- name: Require every requested PHP module and SAPI to be installed
+  ansible.builtin.assert:
+    that: _php_modules_ready
+    fail_msg: 'A requested PHP module INI or SAPI conf.d directory is missing or invalid. Install the matching version-specific package; helpers returning success is not proof a module exists.'
+  when: not ansible_check_mode
+
+- name: Record deferred PHP module validation in check mode
+  ansible.builtin.set_fact:
+    _php_module_check_unverified: true
+  when: ansible_check_mode and not _php_modules_ready
+
+- name: Explain unavailable PHP module check-mode validation
+  ansible.builtin.debug:
+    msg: 'PHP module changes cannot be verified until the requested module packages and SAPI directories are installed. Check mode has not run phpenmod/phpdismod or changed module state.'
+  when: ansible_check_mode and not _php_modules_ready
+
+- name: Inspect and manage installed PHP module targets
+  when: _php_modules_ready and _php_module_paths | length > 0
+  block:
+    - name: Inspect PHP module directory ancestors
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop: "{{ ((_php_module_paths | map(attribute='source') | map('dirname') | list) + (_php_module_paths | map(attribute='conf_dir') | list) + (_php_module_paths | map(attribute='markers') | flatten | map(attribute='path') | map('dirname') | list)) | krisx.ops.php_path_ancestors }}"
+      register: _php_module_directory_stats
+      no_log: true
+
+    - name: Refuse symlinked or non-directory PHP module ancestors
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false)))
+        fail_msg: 'PHP module directories and administrative-state ancestors must be regular directories or absent.'
+      loop: '{{ _php_module_directory_stats.results }}'
+      no_log: true
+
+    - name: Read requested PHP module priorities without exposing INI contents
+      ansible.builtin.slurp:
+        src: '{{ item.source }}'
+      loop: '{{ _php_module_paths }}'
+      register: _php_module_sources
+      no_log: true
+
+    - name: Capture distribution PHP module filenames
+      ansible.builtin.set_fact:
+        _php_module_targets: '{{ _php_module_paths | krisx.ops.php_module_targets(_php_module_sources.results) }}'
+      no_log: true
+
+    - name: Find all matching requested PHP module entries
+      ansible.builtin.find:
+        paths: '{{ item.conf_dir }}'
+        patterns: "^(?:.*-)?{{ item.module | regex_escape }}[.]ini$"
+        use_regex: true
+        recurse: false
+        file_type: any
+        follow: false
+      loop: '{{ _php_module_targets }}'
+      register: _php_module_found
+      no_log: true
+
+    - name: Inspect requested PHP module live links
+      ansible.builtin.stat:
+        path: '{{ item.link }}'
+        follow: false
+      loop: '{{ _php_module_targets }}'
+      register: _php_module_link_stats
+      no_log: true
+
+    - name: Inspect all PHP module administrative markers
+      ansible.builtin.stat:
+        path: '{{ item.path }}'
+        follow: false
+      loop: "{{ _php_module_targets | map(attribute='markers') | flatten }}"
+      register: _php_module_marker_stats
+      no_log: true
+
+    - name: Require regular PHP module administrative markers before reading
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+        fail_msg: 'PHP module administrative markers must be regular files or absent.'
+      loop: '{{ _php_module_marker_stats.results }}'
+      no_log: true
+
+    - name: Back up opaque PHP module administrative markers
+      ansible.builtin.copy:
+        src: '{{ item.item.path }}'
+        dest: '{{ _php_backup.path }}/module-marker-{{ _php_marker_index }}'
+        remote_src: true
+        mode: '0600'
+        follow: false
+      loop: '{{ _php_module_marker_stats.results }}'
+      loop_control:
+        index_var: _php_marker_index
+      when: not ansible_check_mode and item.stat.exists
+      changed_when: false
+      no_log: true
+      diff: false
+
+    - name: Validate and retain the complete PHP module recovery snapshot
+      ansible.builtin.set_fact:
+        _php_module_recovery: "{{ _php_module_targets | krisx.ops.php_module_snapshot(_php_module_link_stats.results, _php_module_marker_stats.results, _php_module_found.results, (_php_backup.path | default(''))) }}"
+      no_log: true
+
+    - name: Report predicted PHP module changes without mutating them
+      ansible.builtin.debug:
+        msg: 'Explicit PHP module links or administrative markers would change.'
+      changed_when: _php_module_recovery.changes | length > 0
+      when: ansible_check_mode
+
+    - name: Apply and verify explicitly scoped PHP module changes
+      when: not ansible_check_mode
+      block:
+        - name: Apply requested PHP module administrative state
+          ansible.builtin.command:
+            argv:
+              - "{{ '/usr/sbin/phpenmod' if item.state == 'enabled' else '/usr/sbin/phpdismod' }}"
+              - '-v'
+              - '{{ item.version }}'
+              - '-s'
+              - '{{ item.sapi }}'
+              - '{{ item.module }}'
+          loop: '{{ _php_module_recovery.changes }}'
+          register: _php_module_helper_results
+          changed_when: true
+          no_log: true
+
+        - name: Verify requested PHP module sources remain regular files
+          ansible.builtin.stat:
+            path: '{{ item.source }}'
+            follow: true
+          loop: '{{ _php_module_targets }}'
+          register: _php_module_after_sources
+          no_log: true
+
+        - name: Verify requested PHP module live links after helpers
+          ansible.builtin.stat:
+            path: '{{ item.link }}'
+            follow: false
+          loop: '{{ _php_module_targets }}'
+          register: _php_module_after_links
+          no_log: true
+
+        - name: Verify PHP module administrative markers after helpers
+          ansible.builtin.stat:
+            path: '{{ item.path }}'
+            follow: false
+          loop: "{{ _php_module_targets | map(attribute='markers') | flatten }}"
+          register: _php_module_after_markers
+          no_log: true
+
+        - name: Verify no additional PHP module links remain after helpers
+          ansible.builtin.find:
+            paths: '{{ item.conf_dir }}'
+            patterns: "^(?:.*-)?{{ item.module | regex_escape }}[.]ini$"
+            use_regex: true
+            recurse: false
+            file_type: any
+            follow: false
+          loop: '{{ _php_module_targets }}'
+          register: _php_module_after_found
+          no_log: true
+
+        - name: Reject PHP helper warnings and unachieved requested module states
+          ansible.builtin.assert:
+            that:
+              - _php_module_helper_results.results | selectattr('stderr', 'defined') | map(attribute='stderr') | join('') | trim | length == 0
+              - _php_module_after_sources.results | selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') | list | length == _php_module_targets | length
+              - _php_module_targets | krisx.ops.php_module_verify(_php_module_after_links.results, _php_module_after_markers.results, _php_module_after_found.results)
+            fail_msg: 'A PHP module helper warned or failed state verification. Both conf.d links and administrative markers must match the request; recovery will be attempted.'
+          no_log: true
+
+        - name: Capture FPM versions whose effective PHP modules changed
+          ansible.builtin.set_fact:
+            _php_module_changed_versions: '{{ _php_module_recovery.changed_versions }}'
+            _php_module_recovery: "{{ _php_module_recovery | combine({'post_state': _php_module_targets | krisx.ops.php_module_fingerprint(_php_module_after_sources.results, _php_module_after_links.results, _php_module_after_markers.results)}) }}"
+          no_log: true

@@ -1,0 +1,17 @@
+---
+- name: Validate and render all PHP inputs before host changes
+  ansible.builtin.import_tasks: prepare.yml
+  tags: [php, install, php_install, configure, php_config]
+
+- name: Install configured PHP versions
+  ansible.builtin.import_tasks: php_install.yml
+  tags: [php, install, php_install]
+
+- name: Select the explicitly requested PHP CLI
+  ansible.builtin.import_tasks: php_cli.yml
+  when: php_manage_cli
+  tags: [php, install, php_install]
+
+- name: Configure the complete PHP file set
+  ansible.builtin.import_tasks: php_config.yml
+  tags: [php, configure, php_config]

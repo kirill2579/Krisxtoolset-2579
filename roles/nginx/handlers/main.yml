@@ -1,0 +1,11 @@
+---
+- name: Validate and reload pending nginx services
+  ansible.builtin.include_tasks: reload.yml
+  listen: nginx configuration installed
+  loop: '{{ _nginx_pending_reloads | default({}) | dict2items }}'
+  loop_control:
+    loop_var: _nginx_reload_target
+    label: '{{ _nginx_reload_target.key }}'
+  when:
+    - not ansible_check_mode
+    - _nginx_apply_complete | default(false)

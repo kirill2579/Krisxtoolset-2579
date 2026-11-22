@@ -1,0 +1,13 @@
+#
+# SPA security policy
+#
+
+# Hidden files
+location ~ /\.(?!well-known) {
+    return 404;
+}
+
+# Requests that look like files
+location ~ \.[^/]+$ {
+    try_files $uri =404;
+}

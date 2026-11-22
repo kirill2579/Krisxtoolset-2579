@@ -1,0 +1,49 @@
+---
+- name: Inspect the PHP role source before deciding whether native bootstrap is needed
+  krisx.ops.php_repository_uri:
+    codename: '{{ ansible_facts.distribution_release }}'
+    uri: '{{ php_repository_uri }}'
+    state: inspect
+  register: _php_repository_source
+  when: php_manage_repository and php_repository == 'ppa:ondrej/php'
+
+- name: Install PHP repository dependencies
+  ansible.builtin.apt:
+    name: '{{ php_repository_dependencies }}'
+    state: present
+    update_cache: true
+  when: php_manage_repository
+
+- name: Configure the requested PHP repository
+  ansible.builtin.apt_repository:
+    repo: '{{ php_repository }}'
+    state: present
+    # Bootstrap keys and the native source first, then migrate its URI before
+    # metadata is fetched. Custom repositories retain their previous behavior.
+    update_cache: "{{ php_repository != 'ppa:ondrej/php' }}"
+  register: _php_repository_bootstrap
+  when:
+    - php_manage_repository
+    - php_repository != 'ppa:ondrej/php' or not (_php_repository_source.found | default(false))
+
+- name: Apply the PHP URI without recreating an original PPA entry on every run
+  krisx.ops.php_repository_uri:
+    codename: '{{ ansible_facts.distribution_release }}'
+    uri: '{{ php_repository_uri }}'
+  register: _php_repository_migration
+  when: php_manage_repository and php_repository == 'ppa:ondrej/php'
+
+- name: Refresh metadata after the PHP role source changes
+  ansible.builtin.apt:
+    update_cache: true
+  when:
+    - php_manage_repository and php_repository == 'ppa:ondrej/php'
+    - _php_repository_bootstrap.changed or _php_repository_migration.changed
+
+# A missing essential package is fatal. Configuration must not continue on a
+# partially installed version or silently omit a requested extension.
+- name: Install the complete PHP package set
+  ansible.builtin.apt:
+    name: '{{ _php_packages }}'
+    state: present
+    install_recommends: false

@@ -1,0 +1,20 @@
+---
+- name: Update supported Linux systems
+  tags:
+    - system_update
+    - system-update
+  block:
+    - name: Validate system update inputs
+      ansible.builtin.import_tasks: validate.yml
+
+    - name: Set target timezone
+      community.general.timezone:
+        name: "{{ system_update_time_zone }}"
+
+    - name: Update Debian family packages
+      ansible.builtin.include_tasks: use-debian.yml
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Update RedHat family packages
+      ansible.builtin.include_tasks: use-centos.yml
+      when: ansible_facts['os_family'] == 'RedHat'

@@ -1,0 +1,52 @@
+---
+- name: Recheck the bundled PID path and running service before configuration changes
+  ansible.builtin.import_tasks: recheck_pid.yml
+  when: nginx_template in ['nginx.conf.j2', role_path ~ '/templates/nginx.conf.j2']
+
+- name: Require unchanged nginx static sources before configuration changes
+  ansible.builtin.assert:
+    that:
+      - nginx_files_dir | krisx.ops.nginx_static_manifest(nginx_config_dir) == _nginx_static_manifest
+    fail_msg: 'The nginx static source tree changed after preflight; rerun with stable controller files.'
+
+- name: Inspect managed nginx directories
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: '{{ _nginx_directories }}'
+  register: _nginx_original_directories
+
+- name: Require regular nginx directories or new paths
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'Managed nginx directories must not be symlinks or non-directory files.'
+  loop: '{{ _nginx_original_directories.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Inspect managed nginx files
+  ansible.builtin.stat:
+    path: '{{ item.dest }}'
+    follow: false
+  loop: '{{ _nginx_managed_files }}'
+  register: _nginx_original_files
+  no_log: true
+
+- name: Require regular nginx files or new filenames
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'Managed nginx files must not be symlinks or non-regular files.'
+  loop: '{{ _nginx_original_files.results }}'
+  loop_control:
+    label: '{{ item.item.dest }}'
+  no_log: true
+
+- name: Predict nginx changes without changing live files
+  ansible.builtin.import_tasks: check.yml
+  when: ansible_check_mode
+
+- name: Apply and validate the complete nginx configuration
+  ansible.builtin.import_tasks: apply.yml
+  when: not ansible_check_mode

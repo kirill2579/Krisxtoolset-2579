@@ -1,0 +1,19 @@
+# Managed by Ansible: only this role's explicitly configured PHP pool logs.
+# Main PHP-FPM logs retain their distribution-provided rotation rules.
+{% for worker in [true, false] %}
+{% set paths = _php_pool_log_paths | selectattr('worker', 'equalto', worker) | map(attribute='dest') | unique | sort | list %}
+{% if paths | length > 0 %}
+{% for path in paths %}
+"{{ path }}"
+{% endfor %}
+{
+    {{ php_fpm_logrotate_frequency }}
+    rotate {{ php_fpm_logrotate_rotate }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 {{ php_fpm_user if worker else 'root' }} {{ php_fpm_log_group }}
+}
+{% endif %}
+{% endfor %}

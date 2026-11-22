@@ -1,0 +1,30 @@
+[{{ item.fpm_socket_name }}]
+listen = {{ php_fpm_socket_dir }}/{{ item.fpm_socket_name }}-{{ item.php_version }}.sock
+user = {{ php_fpm_user }}
+group = {{ php_fpm_group }}
+listen.owner = {{ php_fpm_listen_owner }}
+listen.group = {{ php_fpm_listen_group }}
+listen.mode = {{ php_fpm_listen_mode }}
+{{ item.pm_content | default(php_fpm_pm_content_10) }}
+pm.status_path = /status
+ping.path = /ping
+ping.response = pong
+{% if log.php.slow | default(false) and log.target | default('file') != 'off' %}
+request_slowlog_timeout = {{ log.php.slow_time | default('5s') }}
+slowlog = {{ php_fpm_log_dir }}/php-slow-{{ item.fpm_socket_name }}-{{ item.php_version }}.log
+{% endif %}
+catch_workers_output = yes
+{% if log.target | default('file') == 'syslog' %}
+php_admin_value[error_log] = syslog
+{% elif log.target | default('file') == 'off' %}
+php_admin_value[error_log] = /dev/null
+{% else %}
+php_admin_value[error_log] = {{ php_fpm_log_dir }}/php-error-{{ item.fpm_socket_name }}-{{ item.php_version }}.log
+{% endif %}
+php_flag[display_errors] = off
+php_admin_flag[log_errors] = {{ 'off' if log.target | default('file') == 'off' else (log.php.log_errors | default('on')) }}
+php_admin_value[memory_limit] = {{ item.memory_limit | default('128M') }}
+php_value[post_max_size] = {{ item.post_max_size | default('2M') }}
+php_value[upload_max_filesize] = {{ item.upload_max_filesize | default('100M') }}
+php_admin_value[session.save_handler] = redis
+php_admin_value[session.save_path] = "{{ php_fpm_session_redis_path }}"

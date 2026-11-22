@@ -1,0 +1,24 @@
+---
+- name: Inspect the PID path before rendering the bundled main template
+  ansible.builtin.import_tasks: pid_config.yml
+  vars:
+    _nginx_pid_config_file: '{{ nginx_config_dir }}/nginx.conf'
+
+- name: Select a stable PID path without changing an existing master path
+  ansible.builtin.set_fact:
+    _nginx_effective_pid_file: "{{ nginx_pid_file if nginx_pid_file | length > 0 else (_nginx_observed_pid_file if _nginx_pid_config_stat.stat.exists else '/run/nginx.pid') }}"
+
+- name: Reject an explicit nginx PID path migration
+  ansible.builtin.assert:
+    that:
+      - not _nginx_pid_config_stat.stat.exists or _nginx_effective_pid_file == _nginx_observed_pid_file
+    fail_msg: 'Changing nginx pid paths during reload is unsafe, even for /run and /var/run aliases. Keep nginx_pid_file empty (auto) or equal to the existing literal. Perform a separately planned service migration before using a different path.'
+
+- name: Check the existing nginx runtime before package or configuration changes
+  ansible.builtin.import_tasks: pid_runtime.yml
+  vars:
+    _nginx_pid_guard_service: '{{ nginx_service_name }}'
+    _nginx_pid_guard_file: '{{ _nginx_effective_pid_file }}'
+    _nginx_pid_guard_config_exists: '{{ _nginx_pid_config_stat.stat.exists }}'
+    _nginx_pid_allow_absent_service: '{{ not _nginx_pid_config_stat.stat.exists }}'
+  when: nginx_manage_service

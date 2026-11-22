@@ -1,0 +1,36 @@
+---
+- name: Install non-secret administrative script
+  ansible.builtin.copy:
+    src: mongodb-admin.js
+    dest: /etc/mongodb-krisx/admin.js
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Run explicit MongoDB state transition over verified local TLS
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mongosh
+      - --quiet
+      - --host
+      - localhost
+      - --port
+      - '{{ mongodb_port | string }}'
+      - --tls
+      - --tlsCAFile
+      - '{{ mongodb_tls_ca_file }}'
+      - --file
+      - /etc/mongodb-krisx/admin.js
+  environment:
+    MONGODB_SELF: '{{ (mongodb_members | selectattr("inventory_host", "equalto", inventory_hostname) | first).host }}'
+    MONGODB_ACTION: '{{ mongodb_client_action }}'
+    MONGODB_SET: '{{ mongodb_replica_set }}'
+    MONGODB_MEMBERS: '{{ mongodb_members | to_json }}'
+    MONGODB_ADMIN_USER: '{{ mongodb_admin_user }}'
+    MONGODB_ADMIN_PASSWORD: '{{ mongodb_admin_password }}'
+    MONGODB_USERS: '{{ mongodb_users | to_json }}'
+    MONGODB_COLLECTIONS: '{{ mongodb_collections | to_json }}'
+    MONGODB_BOOTSTRAP: '{{ mongodb_bootstrap | bool | ternary("yes", "no") }}'
+  register: mongodb_client
+  changed_when: "'CHANGED' in mongodb_client.stdout"
+  no_log: true

@@ -1,0 +1,35 @@
+---
+- name: Ensure SSH principals directory exists
+  ansible.builtin.file:
+    path: /etc/ssh/auth_principals
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Write explicitly enabled SSH certificate principals
+  ansible.builtin.copy:
+    dest: "/etc/ssh/auth_principals/{{ users_item.name }}"
+    content: "{{ users_item.name }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when:
+    - users_item.principal | default(true)
+    - users_item.state | default('present') == 'present'
+  loop: "{{ users_list }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"
+  no_log: true
+
+- name: Remove explicitly disabled or absent SSH principal files
+  ansible.builtin.file:
+    path: "/etc/ssh/auth_principals/{{ users_item.name }}"
+    state: absent
+  when: not users_item.principal | default(true) or users_item.state | default('present') == 'absent'
+  loop: "{{ users_list }}"
+  loop_control:
+    loop_var: users_item
+    label: "{{ users_item.name }}"
+  no_log: true

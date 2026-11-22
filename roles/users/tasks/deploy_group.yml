@@ -1,0 +1,40 @@
+---
+# A deployment label selects the source filename, Unix group and /home path.
+# It does not require a Unix account with the same name.
+- name: Ensure deployment bin directory exists
+  ansible.builtin.file:
+    path: "/home/{{ users_deploy_group }}/bin"
+    state: directory
+    mode: '0750'
+    owner: root
+    group: "{{ users_deploy_group }}"
+
+- name: Ensure deployment tmp directory exists
+  ansible.builtin.file:
+    path: "/home/{{ users_deploy_group }}/tmp"
+    state: directory
+    mode: '0770'
+    owner: root
+    group: "{{ users_deploy_group }}"
+
+- name: Inspect deployment bin directory in check mode
+  ansible.builtin.stat:
+    path: "/home/{{ users_deploy_group }}/bin"
+  register: users_deploy_bin
+  when: ansible_check_mode
+
+- name: Explain deferred copy into a not-yet-created directory
+  ansible.builtin.debug:
+    msg: "Deployment script for {{ users_deploy_group }} is deferred in check mode until its bin directory exists."
+  when:
+    - ansible_check_mode
+    - not users_deploy_bin.stat.isdir | default(false)
+
+- name: Copy deployment script without executing it
+  ansible.builtin.copy:
+    src: "{{ (users_deploy_files ~ '/') if users_deploy_files is defined else '' }}{{ users_deploy_group }}"
+    dest: "/home/{{ users_deploy_group }}/bin/deploy.sh"
+    mode: '0750'
+    owner: root
+    group: "{{ users_deploy_group }}"
+  when: not ansible_check_mode or users_deploy_bin.stat.isdir | default(false)

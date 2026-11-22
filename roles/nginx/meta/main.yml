@@ -1,0 +1,12 @@
+---
+dependencies: []
+galaxy_info:
+  author: KrisX
+  description: Install and configure nginx on APT-based Linux
+  license: MIT
+  min_ansible_version: '2.19'
+  platforms:
+    - name: Ubuntu
+      versions: ['focal', 'jammy', 'noble']
+  role_name: nginx
+  namespace: krisx

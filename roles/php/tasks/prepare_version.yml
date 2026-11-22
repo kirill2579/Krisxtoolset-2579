@@ -1,0 +1,84 @@
+---
+- name: Validate package names for PHP {{ _php_version }}
+  ansible.builtin.assert:
+    that:
+      - php_packages is sequence and php_packages is not string and php_packages is not mapping
+      - php_packages | length > 0
+      - php_cli_version_binary | krisx.ops.php_safe_path == php_cli_version_binary
+      - php_packages | select('string') | list | length == php_packages | length
+      - php_packages | select('match', '^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?$') | list | length == php_packages | length
+    fail_msg: 'php_packages must be a nonempty list of valid package names; php_version is scoped to this version.'
+
+- name: Capture packages and render CLI INI for PHP {{ _php_version }}
+  ansible.builtin.set_fact:
+    _php_packages: '{{ (_php_packages + php_packages) | unique | list }}'
+    _php_cli_checks: "{{ _php_cli_checks + [{'version': _php_version, 'binary': php_cli_version_binary, 'ini_file': php_ini_dir ~ '/' ~ _php_version ~ '/cli/php.ini'}] }}"
+    _php_managed_files: "{{ _php_managed_files + [{'dest': php_ini_dir ~ '/' ~ _php_version ~ '/cli/php.ini', 'content': lookup('ansible.builtin.template', php_template_ini, template_vars={'php_version': _php_version, 'template_destpath': php_ini_dir ~ '/' ~ _php_version ~ '/cli/php.ini'}), 'kind': 'cli', 'version': _php_version}] }}"
+  no_log: true
+
+- name: Validate FPM settings for referenced PHP {{ _php_version }}
+  ansible.builtin.assert:
+    that:
+      - php_fpm_binary | krisx.ops.php_safe_path == php_fpm_binary
+      - php_fpm_config_file | krisx.ops.php_safe_path == php_fpm_config_file
+      - php_fpm_service_name is string and php_fpm_service_name is match('^[A-Za-z0-9][A-Za-z0-9_.@-]*$')
+      - not php_manage_service or php_fpm_service_config_file == php_fpm_config_file
+    fail_msg: 'The managed FPM service must use the validated main configuration path. Set php_fpm_service_config_file explicitly for a configured custom service, or disable php_manage_service.'
+  when: _php_version_pools | length > 0 or _php_version in _php_module_fpm_versions
+
+- name: Capture the explicit FPM context for PHP {{ _php_version }}
+  ansible.builtin.set_fact:
+    _php_services: "{{ _php_services + [{'version': _php_version, 'service_name': php_fpm_service_name, 'binary': php_fpm_binary, 'config_file': php_fpm_config_file, 'ini_file': php_ini_dir ~ '/' ~ _php_version ~ '/fpm/php.ini', 'requires_redis': _php_version_pools | length > 0 and php_template_fpm in ['pool.conf.j2', role_path ~ '/templates/pool.conf.j2'], 'enabled': php_fpm_service_enabled, 'dropin': php_systemd_dir ~ '/' ~ (php_fpm_service_name if php_fpm_service_name.endswith('.service') else php_fpm_service_name ~ '.service') ~ '.d/zz-ansible-php-runtime.conf'}] }}"
+  when: _php_version_pools | length > 0 or _php_version in _php_module_fpm_versions
+  no_log: true
+
+- name: Render FPM INI and main configuration for referenced PHP {{ _php_version }}
+  ansible.builtin.set_fact:
+    _php_managed_files: "{{ _php_managed_files + [{'dest': php_ini_dir ~ '/' ~ _php_version ~ '/fpm/php.ini', 'content': lookup('ansible.builtin.template', php_template_ini), 'kind': 'fpm', 'version': _php_version}, {'dest': php_fpm_config_file, 'content': lookup('ansible.builtin.template', php_template_fpm_main), 'kind': 'fpm', 'version': _php_version}] }}"
+  when: _php_version_pools | length > 0
+  no_log: true
+
+- name: Render version-specific pools for PHP {{ _php_version }}
+  ansible.builtin.set_fact:
+    _php_managed_files: "{{ _php_managed_files + [{'dest': php_fpm_config_dir ~ '/' ~ _php_version ~ '/' ~ _php_pool.fpm_socket_name ~ '.fpm', 'content': lookup('ansible.builtin.template', php_template_fpm, template_vars={'item': _php_pool, 'php_version': _php_version}) | krisx.ops.php_validate_pool_render(_php_pool, php_fpm_socket_dir), 'kind': 'fpm', 'version': _php_version}] }}"
+  loop: '{{ _php_version_pools }}'
+  loop_control:
+    loop_var: _php_pool
+  no_log: true
+
+- name: Render the FPM runtime directory drop-in for PHP {{ _php_version }}
+  ansible.builtin.set_fact:
+    _php_managed_files: "{{ _php_managed_files + [{'dest': php_systemd_dir ~ '/' ~ (php_fpm_service_name if php_fpm_service_name.endswith('.service') else php_fpm_service_name ~ '.service') ~ '.d/zz-ansible-php-runtime.conf', 'content': '[Service]\nRuntimeDirectory=' ~ php_fpm_runtime_dir ~ '\nRuntimeDirectoryMode=' ~ php_fpm_runtime_dir_mode ~ '\nRuntimeDirectoryPreserve=yes\n', 'kind': 'systemd', 'version': _php_version}] }}"
+  when: php_manage_service and _php_version_pools | length > 0
+  no_log: true
+
+- name: Capture bundled FPM master log destinations
+  ansible.builtin.set_fact:
+    _php_log_paths: "{{ _php_log_paths + [{'dest': php_fpm_main_log_file, 'worker': false, 'kind': 'main', 'version': _php_version}] }}"
+  when:
+    - _php_version_pools | length > 0
+    - php_template_fpm_main in ['php-fpm.conf.j2', role_path ~ '/templates/php-fpm.conf.j2']
+    - log.target | default('file') == 'file'
+
+- name: Capture bundled worker error log destinations
+  ansible.builtin.set_fact:
+    _php_log_paths: "{{ _php_log_paths + [{'dest': php_fpm_log_dir ~ '/php-error-' ~ _php_pool.fpm_socket_name ~ '-' ~ _php_version ~ '.log', 'worker': true, 'kind': 'error', 'version': _php_version}] }}"
+  loop: '{{ _php_version_pools }}'
+  loop_control:
+    loop_var: _php_pool
+  no_log: true
+  when:
+    - php_template_fpm in ['pool.conf.j2', role_path ~ '/templates/pool.conf.j2']
+    - log.target | default('file') == 'file'
+
+- name: Capture bundled FPM slow log destinations
+  ansible.builtin.set_fact:
+    _php_log_paths: "{{ _php_log_paths + [{'dest': php_fpm_log_dir ~ '/php-slow-' ~ _php_pool.fpm_socket_name ~ '-' ~ _php_version ~ '.log', 'worker': false, 'kind': 'slow', 'version': _php_version}] }}"
+  loop: '{{ _php_version_pools }}'
+  loop_control:
+    loop_var: _php_pool
+  no_log: true
+  when:
+    - php_template_fpm in ['pool.conf.j2', role_path ~ '/templates/pool.conf.j2']
+    - log.target | default('file') != 'off'
+    - log.php.slow | default(false)

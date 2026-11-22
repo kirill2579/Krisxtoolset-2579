@@ -1,0 +1,213 @@
+---
+# Versions are quoted strings, for example ['8.3', '8.4'].
+php_versions: []
+php_manage_cli: true
+# php_cli_default has deliberately no default. Choose it explicitly.
+php_manage_service: true
+php_fpm_service_enabled: true
+php_manage_repository: true
+php_repository: ppa:ondrej/php
+# URI override for the standard PPA only; its native key bootstrap stays in this role.
+php_repository_uri: https://ppa.launchpadcontent.net/ondrej/php/ubuntu
+php_repository_dependencies: [lsb-release, ca-certificates, apt-transport-https, gnupg]
+php_packages:
+  - "php{{ php_version }}-cli"
+  - "php{{ php_version }}-common"
+  - "php{{ php_version }}-curl"
+  - "php{{ php_version }}-fpm"
+
+php_ini_dir: /etc/php
+php_template_ini: php.ini.j2
+php_template_fpm_main: php-fpm.conf.j2
+php_template_fpm: pool.conf.j2
+php_fpm_config_dir: /etc/nginx/fpm
+php_fpm_socket_dir: /var/run/fpm
+php_fpm_config_file: "{{ php_ini_dir }}/{{ php_version }}/fpm/php-fpm.conf"
+# The actual service config path; override only after configuring the service.
+php_fpm_service_config_file: "/etc/php/{{ php_version }}/fpm/php-fpm.conf"
+php_fpm_binary: "/usr/sbin/php-fpm{{ php_version }}"
+php_fpm_service_name: "php{{ php_version }}-fpm"
+php_fpm_runtime_dir: fpm
+php_fpm_runtime_dir_mode: '0755'
+php_systemd_dir: /etc/systemd/system
+php_cli_version_binary: "/usr/bin/php{{ php_version }}"
+php_cli_binary: "/usr/bin/php{{ php_cli_default }}"
+php_cli_link: /usr/bin/php
+php_alternatives_binary: /usr/bin/update-alternatives
+php_fpm_conf: []
+# Absent SAPIs and empty module lists leave current module state unchanged.
+php_enmodes: {}
+php_dismodes: {}
+php_fpm_user: www-data
+php_fpm_group: www
+php_fpm_listen_owner: "{{ php_fpm_user }}"
+php_fpm_listen_group: "{{ php_fpm_group }}"
+php_fpm_listen_mode: '0660'
+# Keep the package main-log path and its existing rotation rule.
+php_fpm_main_log_file: "/var/log/php{{ php_version }}-fpm.log"
+php_fpm_log_dir: /var/log/php
+# Read-only collector access is separate from pool and socket groups.
+php_fpm_log_group: adm
+php_fpm_manage_logrotate: true
+php_fpm_logrotate_file: /etc/logrotate.d/ansible-php-pools
+php_fpm_logrotate_binary: /usr/sbin/logrotate
+php_fpm_logrotate_frequency: daily
+php_fpm_logrotate_rotate: 14
+# Required with the bundled pool template; configure the real Redis endpoint.
+php_fpm_session_redis_path: ''
+# Conservative fallback for pools that do not supply their own pm_content.
+php_fpm_pm_content_5: |
+    pm = dynamic
+    pm.max_children = 5
+    pm.start_servers = 1
+    pm.min_spare_servers = 1
+    pm.max_spare_servers = 3
+    pm.max_requests = 1000
+    request_terminate_timeout = 7
+php_fpm_pm_content_50: |
+    pm = dynamic
+    pm.max_children = 50
+    pm.start_servers = 10
+    pm.min_spare_servers = 5
+    pm.max_spare_servers = 15
+    pm.max_requests = 1000
+    request_terminate_timeout = 7
+php_fpm_pm_content_50_t_20: |
+    pm = dynamic
+    pm.max_children = 50
+    pm.start_servers = 10
+    pm.min_spare_servers = 5
+    pm.max_spare_servers = 15
+    pm.max_requests = 1000
+    request_terminate_timeout = 20
+
+php_fpm_pm_content_10: |
+    pm = dynamic
+    pm.max_children = 10
+    pm.start_servers = 5
+    pm.min_spare_servers = 3
+    pm.max_spare_servers = 5
+    pm.max_requests = 1000
+    request_terminate_timeout = 7s
+
+php_fpm_pm_content_100: |
+    pm = static
+    pm.max_children = 100
+    pm.max_requests = 10000
+
+php_ini_config:
+  PHP:
+    engine: 'On'
+    short_open_tag: 'Off'
+    precision: '14'
+    output_buffering: '4096'
+    zlib.output_compression: 'Off'
+    implicit_flush: 'Off'
+    unserialize_callback_func: ''
+    serialize_precision: '-1'
+    disable_functions: ''
+    disable_classes: ''
+    zend.enable_gc: 'On'
+    zend.exception_ignore_args: 'On'
+    zend.exception_string_param_max_len: '0'
+    expose_php: 'On'
+    max_execution_time: '30'
+    max_input_time: '60'
+    memory_limit: '-1'
+    error_reporting: E_ALL & ~E_DEPRECATED & ~E_STRICT
+    display_errors: 'Off'
+    display_startup_errors: 'Off'
+    log_errors: 'On'
+    ignore_repeated_errors: 'Off'
+    ignore_repeated_source: 'Off'
+    report_memleaks: 'On'
+    variables_order: '"GPCS"'
+    request_order: '"GP"'
+    register_argc_argv: 'Off'
+    auto_globals_jit: 'On'
+    post_max_size: 8M
+    auto_prepend_file: ''
+    auto_append_file: ''
+    default_mimetype: '"text/html"'
+    default_charset: '"UTF-8"'
+    doc_root: ''
+    user_dir: ''
+    enable_dl: 'Off'
+    file_uploads: 'On'
+    upload_max_filesize: 2M
+    max_file_uploads: '20'
+    allow_url_fopen: 'On'
+    allow_url_include: 'Off'
+    default_socket_timeout: '60'
+  CLI Server:
+    cli_server.color: 'On'
+  Pdo_mysql:
+    pdo_mysql.default_socket: ''
+  mail function:
+    SMTP: localhost
+    smtp_port: '25'
+    mail.add_x_header: 'Off'
+    mail.mixed_lf_and_crlf: 'Off'
+  ODBC:
+    odbc.allow_persistent: 'On'
+    odbc.check_persistent: 'On'
+    odbc.max_persistent: '-1'
+    odbc.max_links: '-1'
+    odbc.defaultlrl: '4096'
+    odbc.defaultbinmode: '1'
+  MySQLi:
+    mysqli.max_persistent: '-1'
+    mysqli.allow_persistent: 'On'
+    mysqli.max_links: '-1'
+    mysqli.default_port: '3306'
+    mysqli.default_socket: ''
+    mysqli.default_host: ''
+    mysqli.default_user: ''
+    mysqli.default_pw: ''
+  mysqlnd:
+    mysqlnd.collect_statistics: 'On'
+    mysqlnd.collect_memory_statistics: 'Off'
+  PostgreSQL:
+    pgsql.allow_persistent: 'On'
+    pgsql.auto_reset_persistent: 'Off'
+    pgsql.max_persistent: '-1'
+    pgsql.max_links: '-1'
+    pgsql.ignore_notice: '0'
+    pgsql.log_notice: '0'
+  bcmath:
+    bcmath.scale: '0'
+  Session:
+    session.save_handler: files
+    session.use_strict_mode: '0'
+    session.use_cookies: '1'
+    session.use_only_cookies: '1'
+    session.name: PHPSESSID
+    session.auto_start: '0'
+    session.cookie_lifetime: '0'
+    session.cookie_path: /
+    session.cookie_domain: ''
+    session.cookie_httponly: ''
+    session.cookie_samesite: ''
+    session.serialize_handler: php
+    session.gc_probability: '0'
+    session.gc_divisor: '1000'
+    session.gc_maxlifetime: '1440'
+    session.referer_check: ''
+    session.cache_limiter: nocache
+    session.cache_expire: '180'
+    session.use_trans_sid: '0'
+    session.sid_length: '26'
+    session.trans_sid_tags: '"a=href,area=href,frame=src,form="'
+    session.sid_bits_per_character: '5'
+  Assertion:
+    zend.assertions: '-1'
+  Tidy:
+    tidy.clean_output: 'Off'
+  soap:
+    soap.wsdl_cache_enabled: '1'
+    soap.wsdl_cache_dir: '"/tmp"'
+    soap.wsdl_cache_ttl: '86400'
+    soap.wsdl_cache_limit: '5'
+  ldap:
+    ldap.max_links: '-1'
+php_ini_overrides: {}

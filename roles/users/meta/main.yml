@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: users
+  author: KrisX
+  description: Manage Linux accounts, SSH access and explicit group sudo rules
+  min_ansible_version: '2.19'
+  platforms:
+    - name: Debian
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+    - name: EL
+      versions: [all]
+dependencies: []

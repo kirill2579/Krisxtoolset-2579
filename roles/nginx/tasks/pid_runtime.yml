@@ -1,0 +1,54 @@
+---
+# Read-only checks: nginx -t itself may create an empty missing PID file.
+- name: Inspect the managed nginx service before testing its configuration
+  ansible.builtin.service_facts:
+  register: _nginx_pid_services
+
+- name: Resolve this nginx service from the fresh service snapshot
+  ansible.builtin.set_fact:
+    _nginx_pid_service_entries: "{{ _nginx_pid_services.ansible_facts.services | dict2items | selectattr('key', 'in', [_nginx_pid_guard_service | regex_replace('\\.service$', ''), _nginx_pid_guard_service | regex_replace('\\.service$', '') ~ '.service']) | map(attribute='value') | list }}"
+
+- name: Require a known nginx runtime state
+  ansible.builtin.assert:
+    that:
+      - (_nginx_pid_service_entries | length > 0) or (_nginx_pid_allow_absent_service | default(false))
+      - _nginx_pid_service_entries | map(attribute='state') | difference(['running', 'stopped', 'inactive']) | length == 0
+      - _nginx_pid_service_entries | map(attribute='state') | map('regex_replace', '^inactive$', 'stopped') | unique | length <= 1
+      - _nginx_pid_service_entries | selectattr('status', 'defined') | map(attribute='status') | intersect(['failed', 'masked', 'not-found']) | length == 0
+    fail_msg: 'Cannot establish whether the managed nginx service is running. Check service facts and nginx_service_name before proceeding; no PID migration or automatic restart is attempted.'
+
+- name: Require an existing configuration for an already running nginx service
+  ansible.builtin.assert:
+    that:
+      - _nginx_pid_guard_config_exists
+    fail_msg: 'The nginx service is running but its managed nginx.conf is absent. Establish the running master configuration before applying this role.'
+  when: "'running' in (_nginx_pid_service_entries | map(attribute='state') | list)"
+
+- name: Inspect the running nginx PID file without changing it
+  ansible.builtin.stat:
+    path: '{{ _nginx_pid_guard_file }}'
+    follow: false
+  register: _nginx_pid_runtime_stat
+  when: "'running' in (_nginx_pid_service_entries | map(attribute='state') | list)"
+
+- name: Require the running nginx PID file to exist
+  ansible.builtin.assert:
+    that:
+      - _nginx_pid_runtime_stat.stat.exists
+      - _nginx_pid_runtime_stat.stat.isreg | default(false)
+      - not (_nginx_pid_runtime_stat.stat.islnk | default(false))
+    fail_msg: 'nginx is running but its PID file is missing or not regular. Inspect systemctl show/cat, the master process and PID path first. The role will not run nginx -t, write a PID, or restart the service to hide this condition.'
+  when: "'running' in (_nginx_pid_service_entries | map(attribute='state') | list)"
+
+- name: Read the running nginx PID without changing it
+  ansible.builtin.slurp:
+    src: '{{ _nginx_pid_guard_file }}'
+  register: _nginx_pid_runtime_contents
+  when: "'running' in (_nginx_pid_service_entries | map(attribute='state') | list)"
+
+- name: Require a positive numeric PID before nginx validation or reload
+  ansible.builtin.assert:
+    that:
+      - (_nginx_pid_runtime_contents.content | b64decode) is match('^[1-9][0-9]*\n?\Z')
+    fail_msg: 'nginx is running but its PID file is empty or invalid. Inspect the service MainPID and actual master before recovery; no automatic PID write or restart is performed.'
+  when: "'running' in (_nginx_pid_service_entries | map(attribute='state') | list)"

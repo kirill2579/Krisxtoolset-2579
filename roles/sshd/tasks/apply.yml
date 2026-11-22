@@ -1,0 +1,165 @@
+---
+- name: Inspect installed SSH server configuration
+  ansible.builtin.stat:
+    path: /etc/ssh/sshd_config
+    follow: false
+  register: _sshd_original
+
+- name: Require an installed regular SSH server configuration
+  ansible.builtin.assert:
+    that:
+      - _sshd_original.stat.exists
+      - _sshd_original.stat.isreg | default(false)
+      - not (_sshd_original.stat.islnk | default(false))
+    fail_msg: 'Install OpenSSH first; /etc/ssh/sshd_config must be a regular file.'
+
+- name: Inspect the requested CA destination
+  ansible.builtin.stat:
+    path: '{{ sshd_trusted_user_ca_keys_file }}'
+    follow: false
+  register: _sshd_ca_original
+  when: sshd_trusted_user_ca_keys | length > 0
+
+- name: Require a regular CA destination or a new file
+  ansible.builtin.assert:
+    that:
+      - not _sshd_ca_original.stat.exists or (_sshd_ca_original.stat.isreg | default(false) and not (_sshd_ca_original.stat.islnk | default(false)))
+    fail_msg: 'The CA destination must be a regular file or a new filename in an existing directory.'
+  when: sshd_trusted_user_ca_keys | length > 0
+
+- name: Validate each public CA key with OpenSSH
+  ansible.builtin.command:
+    argv: [/usr/bin/ssh-keygen, -l, -f, /dev/stdin]
+    stdin: '{{ sshd_item }}'
+  loop: '{{ sshd_trusted_user_ca_keys }}'
+  loop_control:
+    loop_var: sshd_item
+    label: public CA key
+  changed_when: false
+
+- name: Create private staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ansible-sshd-
+  register: _sshd_stage
+  changed_when: false
+
+- name: Validate candidate before replacing live files
+  block:
+    - name: Snapshot previous SSH server configuration
+      ansible.builtin.copy:
+        src: /etc/ssh/sshd_config
+        remote_src: true
+        dest: '{{ _sshd_stage.path }}/previous_config'
+        owner: root
+        group: root
+        mode: '0600'
+      changed_when: false
+
+    - name: Snapshot previous CA file
+      ansible.builtin.copy:
+        src: '{{ sshd_trusted_user_ca_keys_file }}'
+        remote_src: true
+        dest: '{{ _sshd_stage.path }}/previous_ca'
+        owner: root
+        group: root
+        mode: '0600'
+      when:
+        - sshd_trusted_user_ca_keys | length > 0
+        - _sshd_ca_original.stat.exists
+      changed_when: false
+
+    - name: Stage and validate SSH server candidate
+      ansible.builtin.template:
+        src: sshd_config.j2
+        dest: '{{ _sshd_stage.path }}/sshd_config'
+        owner: root
+        group: root
+        mode: '0600'
+        validate: '{{ sshd_validate_cmd }}'
+      changed_when: false
+
+    - name: Install validated SSH server configuration
+      ansible.builtin.copy:
+        src: '{{ _sshd_stage.path }}/sshd_config'
+        remote_src: true
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0600'
+        backup: true
+        validate: '{{ sshd_validate_cmd }}'
+      register: _sshd_config_install
+
+    # The CA is read at authentication time. Replace it only after config validation.
+    - name: Install public CA file
+      ansible.builtin.copy:
+        dest: '{{ sshd_trusted_user_ca_keys_file }}'
+        content: "{{ sshd_trusted_user_ca_keys | join('\n') ~ '\n' }}"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: true
+      when: sshd_trusted_user_ca_keys | length > 0
+      register: _sshd_ca_install
+
+    - name: Mark deployment complete and queue one reload
+      ansible.builtin.set_fact:
+        _sshd_apply_complete: true
+      changed_when: _sshd_config_install.changed or (_sshd_ca_install.changed | default(false))
+      notify: sshd configuration installed
+
+  rescue:
+    # Copies can fail after replacing bytes, for example on a metadata error.
+    # Attempt both restorations even if one fails; the role still fails below.
+    - name: Restore previous CA after attempted CA installation
+      ansible.builtin.copy:
+        src: '{{ _sshd_stage.path }}/previous_ca'
+        remote_src: true
+        dest: '{{ sshd_trusted_user_ca_keys_file }}'
+        owner: '{{ _sshd_ca_original.stat.uid }}'
+        group: '{{ _sshd_ca_original.stat.gid }}'
+        mode: '{{ _sshd_ca_original.stat.mode }}'
+      when:
+        - _sshd_ca_install | length > 0
+        - _sshd_ca_original.stat.exists
+      ignore_errors: true
+      register: _sshd_restore_ca
+
+    - name: Remove newly created CA after attempted CA installation
+      ansible.builtin.file:
+        path: '{{ sshd_trusted_user_ca_keys_file }}'
+        state: absent
+      when:
+        - _sshd_ca_install | length > 0
+        - not _sshd_ca_original.stat.exists
+      ignore_errors: true
+      register: _sshd_remove_ca
+
+    - name: Restore previous server configuration after attempted installation
+      ansible.builtin.copy:
+        src: '{{ _sshd_stage.path }}/previous_config'
+        remote_src: true
+        dest: /etc/ssh/sshd_config
+        owner: '{{ _sshd_original.stat.uid }}'
+        group: '{{ _sshd_original.stat.gid }}'
+        mode: '{{ _sshd_original.stat.mode }}'
+      when: _sshd_config_install | length > 0
+      ignore_errors: true
+      register: _sshd_restore_config
+
+    - name: Preserve recovery snapshots if any restoration failed
+      ansible.builtin.set_fact:
+        _sshd_keep_stage: "{{ (_sshd_restore_ca.failed | default(false)) or (_sshd_remove_ca.failed | default(false)) or (_sshd_restore_config.failed | default(false)) }}"
+
+    - name: Report unsuccessful SSH server deployment
+      ansible.builtin.fail:
+        msg: "SSH server deployment failed; reload is disabled. Check the earlier errors. {{ ('Recovery snapshots retained at ' ~ _sshd_stage.path) if _sshd_keep_stage else 'Previous file state was restored where installation was attempted.' }}"
+
+  always:
+    - name: Remove private staging directory
+      ansible.builtin.file:
+        path: '{{ _sshd_stage.path }}'
+        state: absent
+      changed_when: false
+      when: not _sshd_keep_stage

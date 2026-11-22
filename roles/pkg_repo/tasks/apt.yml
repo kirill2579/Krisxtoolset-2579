@@ -1,0 +1,148 @@
+---
+- name: Require gathered APT package-manager facts
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.pkg_mgr | default('') == 'apt'
+    quiet: true
+    fail_msg: 'pkg_repo currently supports APT only; gather facts before enabling repositories.'
+
+- name: Reset this invocation's repository-change plan
+  ansible.builtin.set_fact:
+    _pkg_repo_needs_refresh: false
+
+- name: Inspect every requested repository before making changes
+  ansible.builtin.include_tasks: preflight.yml
+  loop: '{{ pkg_repo }}'
+  loop_control:
+    label: '{{ item.name }}'
+
+- name: Inspect the cache-refresh retry marker
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/.pkg-repo-cache-refresh-pending
+    follow: false
+  register: _pkg_repo_cache_pending
+
+- name: Refuse a non-regular cache-refresh marker
+  ansible.builtin.assert:
+    that:
+      - not _pkg_repo_cache_pending.stat.exists or (_pkg_repo_cache_pending.stat.isreg | default(false))
+    quiet: true
+
+- name: Read an existing cache-refresh marker
+  ansible.builtin.slurp:
+    src: /etc/apt/sources.list.d/.pkg-repo-cache-refresh-pending
+  register: _pkg_repo_pending_content
+  when: _pkg_repo_cache_pending.stat.exists
+
+- name: Refuse an unowned cache-refresh marker
+  ansible.builtin.assert:
+    that:
+      - (_pkg_repo_pending_content.content | b64decode).startswith('Managed by Ansible role pkg_repo;')
+    quiet: true
+  when: _pkg_repo_cache_pending.stat.exists
+
+- name: Inspect the source directory for check-mode planning
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d
+  register: _pkg_repo_source_directory
+
+- name: Ensure HTTPS certificate support when adding repositories
+  ansible.builtin.apt:
+    name: ca-certificates
+    state: present
+  when: pkg_repo | rejectattr('state', 'defined') | list | length > 0 or pkg_repo | selectattr('state', 'defined') | selectattr('state', 'equalto', 'present') | list | length > 0
+
+- name: Ensure APT repository directories exist
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/apt/keyrings
+    - /etc/apt/sources.list.d
+  when: pkg_repo | rejectattr('state', 'defined') | list | length > 0 or pkg_repo | selectattr('state', 'defined') | selectattr('state', 'equalto', 'present') | list | length > 0
+
+- name: Mark metadata refresh as pending before repository changes
+  ansible.builtin.copy:
+    content: "Managed by Ansible role pkg_repo; remove only after a successful APT refresh.\n"
+    dest: /etc/apt/sources.list.d/.pkg-repo-cache-refresh-pending
+    owner: root
+    group: root
+    mode: '0644'
+  when:
+    - not ansible_check_mode
+    - _pkg_repo_needs_refresh
+
+- name: Download checksum-pinned public signing keys
+  ansible.builtin.get_url:
+    url: '{{ item.key_url }}'
+    dest: '/etc/apt/keyrings/pkg-repo-{{ item.name }}.asc'
+    checksum: '{{ item.key_checksum | lower }}'
+    owner: root
+    group: root
+    mode: '0644'
+    validate_certs: true
+  loop: '{{ pkg_repo }}'
+  loop_control:
+    label: '{{ item.name }}'
+  when:
+    - item.state | default('present') == 'present'
+    - not ansible_check_mode
+  register: _pkg_repo_keys
+
+- name: Configure independently signed APT sources
+  ansible.builtin.template:
+    src: repository.sources.j2
+    dest: '/etc/apt/sources.list.d/pkg-repo-{{ item.name }}.sources'
+    owner: root
+    group: root
+    mode: '0644'
+  loop: '{{ pkg_repo }}'
+  loop_control:
+    label: '{{ item.name }}'
+  when:
+    - item.state | default('present') == 'present'
+    - not ansible_check_mode or _pkg_repo_source_directory.stat.exists
+  register: _pkg_repo_sources
+
+- name: Remove only explicitly absent owned sources
+  ansible.builtin.file:
+    path: '/etc/apt/sources.list.d/pkg-repo-{{ item.name }}.sources'
+    state: absent
+  loop: '{{ pkg_repo }}'
+  loop_control:
+    label: '{{ item.name }}'
+  when: item.state | default('present') == 'absent'
+  register: _pkg_repo_removed_sources
+
+- name: Remove only explicitly absent owned keys
+  ansible.builtin.file:
+    path: '/etc/apt/keyrings/pkg-repo-{{ item.name }}.asc'
+    state: absent
+  loop: '{{ pkg_repo }}'
+  loop_control:
+    label: '{{ item.name }}'
+  when: item.state | default('present') == 'absent'
+  register: _pkg_repo_removed_keys
+
+# Refresh here, not in a delayed handler: the next role may install packages.
+- name: Refresh changed or previously failed APT metadata
+  when:
+    - not ansible_check_mode
+    - _pkg_repo_needs_refresh or _pkg_repo_keys.changed or _pkg_repo_sources.changed or _pkg_repo_removed_sources.changed or _pkg_repo_removed_keys.changed or _pkg_repo_cache_pending.stat.exists
+  block:
+    - name: Refresh APT metadata
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Clear the successful refresh marker
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/.pkg-repo-cache-refresh-pending
+        state: absent
+
+- name: Explain deferred verification in check mode
+  ansible.builtin.debug:
+    msg: 'Check mode validates inputs and plans local file changes only. Key downloads, checksum verification and APT refresh are deferred; missing source directories also defer source rendering. A normal run is required to verify repository signatures and package availability.'
+  when: ansible_check_mode

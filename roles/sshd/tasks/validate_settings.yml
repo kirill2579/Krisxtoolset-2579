@@ -1,0 +1,30 @@
+---
+- name: Reject duplicate directive names with different case
+  ansible.builtin.assert:
+    that:
+      - _sshd_settings.keys() | map('string') | map('lower') | unique | length == _sshd_settings | length
+    fail_msg: 'Directive names must be unique regardless of case.'
+
+- name: Validate directive names and value containers
+  ansible.builtin.assert:
+    that:
+      - sshd_item.key is string
+      - sshd_item.key is match('^[A-Za-z][A-Za-z0-9]*$')
+      - "sshd_item.key is not search('[\x00-\x1f\x7f]')"
+      - sshd_item.key | lower != 'match'
+      - sshd_item.value is string or sshd_item.value is boolean or sshd_item.value is integer or (sshd_item.value is sequence and sshd_item.value is not mapping)
+      - sshd_item.value is not sequence or sshd_item.value | length > 0
+    fail_msg: 'Use directive names, scalar string/bool/integer values or nonempty lists; Match belongs in sshd_match_blocks.'
+  loop: '{{ _sshd_settings | dict2items }}'
+  loop_control:
+    loop_var: sshd_item
+    label: '{{ sshd_item.key }}'
+
+- name: Validate each directive value
+  ansible.builtin.include_tasks: validate_values.yml
+  vars:
+    _sshd_values: "{{ _sshd_directive.value if (_sshd_directive.value is sequence and _sshd_directive.value is not string) else [_sshd_directive.value] }}"
+  loop: '{{ _sshd_settings | dict2items }}'
+  loop_control:
+    loop_var: _sshd_directive
+    label: '{{ _sshd_directive.key }}'

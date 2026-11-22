@@ -1,0 +1,75 @@
+---
+# Package installation may create files that did not exist at initial preflight.
+# Reinspect those paths before taking the recovery snapshot.
+- name: Reinspect managed PHP directory ancestors
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+  loop: '{{ _php_directories | krisx.ops.php_path_ancestors }}'
+  register: _php_directory_stats
+
+- name: Require safe PHP directory ancestors at activation time
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false) and not (item.stat.islnk | default(false))) or (item.item == '/var/run' and item.stat.islnk | default(false) and item.stat.lnk_source | default('') == '/run')
+    fail_msg: 'A PHP directory path changed to an unsafe symlink or non-directory after preflight.'
+  loop: '{{ _php_directory_stats.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Reinspect managed PHP files
+  ansible.builtin.stat:
+    path: '{{ item.dest }}'
+    follow: false
+  loop: '{{ _php_managed_files }}'
+  register: _php_original_files
+  no_log: true
+
+- name: Require safe PHP files before configuration
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+    fail_msg: 'A managed PHP file became a symlink or non-regular file after preflight.'
+  loop: '{{ _php_original_files.results }}'
+  no_log: true
+
+- name: Reinspect PHP log paths before touching their metadata
+  ansible.builtin.stat:
+    path: '{{ item.dest }}'
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop: '{{ _php_log_paths }}'
+  register: _php_original_logs
+
+- name: Require safe PHP log paths at configuration time
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg | default(false) and not (item.stat.islnk | default(false)))
+  loop: '{{ _php_original_logs.results }}'
+
+- name: Capture original managed directory metadata
+  ansible.builtin.set_fact:
+    _php_original_directories: "{{ _php_directory_stats.results | selectattr('item', 'in', _php_directories) | list }}"
+
+- name: Inspect every required PHP and logrotate validation binary
+  ansible.builtin.stat:
+    path: '{{ item.binary }}'
+  loop: "{{ _php_services + _php_cli_checks + ([{'binary': php_fpm_logrotate_binary}] if _php_logrotate_required else []) }}"
+  register: _php_binary_stats
+
+- name: Require all referenced configuration validation binaries
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isreg | default(false)
+    fail_msg: 'A required PHP CLI, FPM or logrotate validation binary is missing; no configuration was changed.'
+  loop: '{{ _php_binary_stats.results }}'
+  when: not ansible_check_mode
+
+- name: Predict PHP configuration safely
+  ansible.builtin.import_tasks: check.yml
+  when: ansible_check_mode
+
+- name: Apply the all-version PHP configuration transaction
+  ansible.builtin.import_tasks: apply.yml
+  when: not ansible_check_mode

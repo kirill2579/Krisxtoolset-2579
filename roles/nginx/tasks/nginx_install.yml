@@ -1,0 +1,7 @@
+---
+- name: Install the nginx package
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: '{{ nginx_apt_cache_valid_time }}'

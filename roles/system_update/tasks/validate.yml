@@ -1,0 +1,52 @@
+---
+- name: Require facts for a supported target operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.get('os_family', '') in ['Debian', 'RedHat']
+    fail_msg: >-
+      system_update supports Debian/Ubuntu and RedHat-family targets with DNF.
+      FreeBSD target support is deferred. Enable gather_facts: true in the play.
+      The controller operating system does not affect target support.
+
+- name: Require the supported target package manager
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_facts['os_family'] == 'Debian' and ansible_facts.get('pkg_mgr', '') == 'apt')
+        or (ansible_facts['os_family'] == 'RedHat' and ansible_facts.get('pkg_mgr', '') in ['dnf', 'dnf5'])
+    fail_msg: system_update requires APT on Debian/Ubuntu or DNF on RedHat-family targets.
+
+- name: Validate timezone and APT settings before making changes
+  ansible.builtin.assert:
+    that:
+      - system_update_time_zone is string
+      - system_update_time_zone | trim | length > 0
+      - system_update_apt_cache_valid_time is integer
+      - system_update_apt_cache_valid_time is not boolean
+      - system_update_apt_cache_valid_time >= 0
+      - system_update_apt_lock_timeout is integer
+      - system_update_apt_lock_timeout is not boolean
+      - system_update_apt_lock_timeout > 0
+    fail_msg: >-
+      Set system_update_time_zone to a nonempty IANA timezone name; APT cache validity must be a
+      nonnegative integer and APT lock timeout a positive integer (seconds).
+
+- name: Validate reboot settings before making changes
+  ansible.builtin.assert:
+    that:
+      - system_update_reboot is boolean
+      - system_update_reboot_timeout is integer
+      - system_update_reboot_timeout is not boolean
+      - system_update_reboot_timeout > 0
+    fail_msg: >-
+      system_update_reboot must be a YAML boolean and system_update_reboot_timeout
+      a positive integer (seconds). Use JSON extra-vars to preserve scalar types.
+
+- name: Reject unsupported automatic reboot requests on RedHat targets
+  ansible.builtin.assert:
+    that:
+      - not system_update_reboot or ansible_facts['os_family'] == 'Debian'
+    fail_msg: >-
+      Automatic reboot detection is not implemented for RedHat-family targets.
+      Set system_update_reboot: false and arrange any required reboot separately.
+      No timezone or package changes have been made by this role.
